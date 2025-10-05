@@ -1,25 +1,24 @@
 import streamlit as st
 import pandas as pd
 import datetime as dt
+from io import BytesIO
 
-# ===== Data Files =====
+# ===== ไฟล์เก็บข้อมูล =====
 FILE_SCAN = "scan_report.xlsx"
 FILE_REPORT = "leave_report.xlsx"
 
-# ===== Load Files =====
-# Try to load the travel report, create an empty DataFrame if it doesn't exist.
+# ===== โหลดไฟล์ =====
 try:
     df_scan = pd.read_excel(FILE_SCAN)
-except FileNotFoundError:
+except:
     df_scan = pd.DataFrame()
 
-# Try to load the leave report, create an empty DataFrame if it doesn't exist.
 try:
     df_report = pd.read_excel(FILE_REPORT)
-except FileNotFoundError:
+except:
     df_report = pd.DataFrame()
 
-# ===== List of Staff Groups =====
+# ===== รายชื่อกลุ่มงาน =====
 staff_groups = [
     "กลุ่มโรคติดต่อ",
     "กลุ่มระบาดวิทยาและตอบโต้ภาวะฉุกเฉินทางสาธารณสุข",
@@ -42,107 +41,65 @@ staff_groups = [
     "กลุ่มพัฒนานวัตกรรมและวิจัย"
 ]
 
-# ===== Main Menu =====
+# ===== เมนูหลัก =====
 st.title("📋 โปรแกรมบันทึกข้อมูล (สคร.9)")
-main_menu = st.sidebar.radio("เลือกหน้าเมนู", ["📊 Dashboard รวม", "🧭 การไปราชการ", "🕒 การลา", "🛠️ แอดมินจัดการข้อมูล"])
+main_menu = st.sidebar.radio("เลือกหน้าเมนู", ["📊 Dashboard รวม", "🧭 การไปราชการ", "🕒 การลา", "👩‍💼 Admin"])
 
-# ===== Main Dashboard =====
+# ===== ฟังก์ชันกรองข้อมูลตามเดือน =====
+def filter_by_month(df, start_col="วันที่เริ่ม"):
+    if start_col in df.columns:
+        df = df.copy()
+        df[start_col] = pd.to_datetime(df[start_col], errors="coerce")
+        return df
+    return pd.DataFrame()
+
+# ===== Dashboard รวม =====
 if main_menu == "📊 Dashboard รวม":
     st.header("📈 Dashboard สรุปข้อมูลทั้งหมด")
 
-    # ========== Select Year for Summary ==========
-    current_year = dt.date.today().year + 543  # Buddhist Era Year
-    all_years = sorted(
-        set(
-            [current_year]
-            + [pd.to_datetime(x).year + 543 for x in df_scan["วันที่เริ่ม"].dropna()] if not df_scan.empty and "วันที่เริ่ม" in df_scan.columns else [current_year]
-            + [pd.to_datetime(x).year + 543 for x in df_report["วันที่เริ่ม"].dropna()] if not df_report.empty and "วันที่เริ่ม" in df_report.columns else [current_year]
-        )
-    )
-    selected_year = st.selectbox("เลือกปี พ.ศ. สำหรับดูสรุป", all_years, index=len(all_years)-1)
+    month_choice = st.selectbox("เลือกเดือน", list(range(1, 13)), format_func=lambda x: f"เดือน {x}")
+    year_choice = st.number_input("ปี พ.ศ.", min_value=2560, max_value=2600, value=2568)
 
-    # ========== Summary Totals ==========
-    total_travel = len(df_scan)
-    total_leave = len(df_report)
-    total_travel_days = df_scan["จำนวนวัน"].sum() if "จำนวนวัน" in df_scan.columns else 0
-    total_leave_days = df_report["จำนวนวันลา"].sum() if "จำนวนวันลา" in df_report.columns else 0
+    df_scan_f = filter_by_month(df_scan)
+    df_report_f = filter_by_month(df_report)
+
+    # คำนวณสรุป
+    total_travel = len(df_scan_f)
+    total_leave = len(df_report_f)
+    total_travel_days = df_scan_f["จำนวนวัน"].sum() if "จำนวนวัน" in df_scan_f.columns else 0
+    total_leave_days = df_report_f["จำนวนวันลา"].sum() if "จำนวนวันลา" in df_report_f.columns else 0
 
     col1, col2 = st.columns(2)
-    col1.metric("จำนวนผู้ไปราชการ", f"{total_travel:,} คน")
-    col1.metric("จำนวนวันไปราชการรวม", f"{total_travel_days:,} วัน")
-    col2.metric("จำนวนผู้ลา", f"{total_leave:,} คน")
-    col2.metric("จำนวนวันลารวม", f"{total_leave_days:,} วัน")
+    col1.metric("จำนวนผู้ไปราชการ", f"{total_travel} คน")
+    col1.metric("จำนวนวันไปราชการรวม", f"{total_travel_days} วัน")
+    col2.metric("จำนวนผู้ลา", f"{total_leave} คน")
+    col2.metric("จำนวนวันลารวม", f"{total_leave_days} วัน")
 
-    # ========== Monthly Comparison Chart ==========
-    df_chart = pd.DataFrame({
-        "เดือน": list(range(1, 13)),
-        "วันไปราชการ": [0]*12,
-        "วันลา": [0]*12
-    })
+    # กราฟรวม
+    if not df_scan_f.empty or not df_report_f.empty:
+        st.markdown("### 📊 เปรียบเทียบวันลา-ไปราชการต่อเดือน")
+        df_chart = pd.DataFrame({
+            "ประเภท": ["ไปราชการ", "ลา"],
+            "จำนวนวัน": [total_travel_days, total_leave_days]
+        }).set_index("ประเภท")
+        st.bar_chart(df_chart)
 
-    if not df_scan.empty and "วันที่เริ่ม" in df_scan.columns:
-        for _, row in df_scan.iterrows():
-            if pd.notna(row["วันที่เริ่ม"]):
-                start_date = pd.to_datetime(row["วันที่เริ่ม"])
-                if start_date.year + 543 == selected_year:
-                    df_chart.loc[start_date.month-1, "วันไปราชการ"] += row.get("จำนวนวัน", 0)
-
-    if not df_report.empty and "วันที่เริ่ม" in df_report.columns:
-        for _, row in df_report.iterrows():
-            if pd.notna(row["วันที่เริ่ม"]):
-                start_date = pd.to_datetime(row["วันที่เริ่ม"])
-                if start_date.year + 543 == selected_year:
-                    df_chart.loc[start_date.month-1, "วันลา"] += row.get("จำนวนวันลา", 0)
-
-    # Convert month numbers to Thai names
-    month_names = [
-        "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
-        "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"
-    ]
-    df_chart["เดือน"] = month_names
-
-    # ========== Display Results ==========
-    st.markdown("### 📊 กราฟเปรียบเทียบจำนวนวันไปราชการและวันลา (รายเดือน)")
-    st.bar_chart(df_chart.set_index("เดือน"))
-
-    # Summary Table
-    st.markdown("### 📋 ตารางสรุปข้อมูลรายเดือน")
-    df_chart["รวมทั้งหมด (วัน)"] = df_chart["วันไปราชการ"] + df_chart["วันลา"]
-    st.dataframe(df_chart, use_container_width=True)
-
-    # ========== Current Month Summary ==========
-    this_month = dt.date.today().month
-    st.markdown("---")
-    st.subheader(f"📅 สรุปเฉพาะเดือน {month_names[this_month-1]} {selected_year}")
-    month_travel = df_chart.loc[this_month-1, "วันไปราชการ"]
-    month_leave = df_chart.loc[this_month-1, "วันลา"]
-    col1, col2 = st.columns(2)
-    col1.metric("วันไปราชการเดือนนี้", f"{month_travel} วัน")
-    col2.metric("วันลาประจำเดือน", f"{month_leave} วัน")
-
-# ===== Travel Record Form =====
+# ===== ฟอร์มบันทึกการไปราชการ =====
 elif main_menu == "🧭 การไปราชการ":
     st.header("🧾 แบบฟอร์มบันทึกการไปราชการ")
     with st.form("scan_form"):
         data = {}
         data["ชื่อ-สกุล"] = st.text_input("👤 ชื่อ-สกุล")
         data["กลุ่มงาน"] = st.selectbox("🏢 กลุ่มงาน", staff_groups)
-        data["ปี พ.ศ."] = st.number_input("📅 ปี พ.ศ.", min_value=2560, max_value=2600, value=dt.date.today().year + 543)
+        data["ปี พ.ศ."] = st.number_input("📅 ปี พ.ศ.", min_value=2560, max_value=2600, value=2568)
         data["กิจกรรม"] = st.text_input("🏢 กิจกรรม (พิมพ์ชื่อกิจกรรม)")
         data["สถานที่"] = st.text_input("📍 สถานที่")
         data["ผู้จัด"] = st.text_input("👥 ผู้จัด")
         data["วันที่เริ่ม"] = st.date_input("📅 วันที่เริ่ม", dt.date.today())
         data["วันที่สิ้นสุด"] = st.date_input("📅 วันที่สิ้นสุด", dt.date.today())
-        
-        if data["วันที่สิ้นสุด"] < data["วันที่เริ่ม"]:
-            st.error("วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่ม")
-            data["จำนวนวัน"] = 0
-        else:
-            data["จำนวนวัน"] = (data["วันที่สิ้นสุด"] - data["วันที่เริ่ม"]).days + 1
-        
+        data["จำนวนวัน"] = (data["วันที่สิ้นสุด"] - data["วันที่เริ่ม"]).days + 1
         st.write(f"📆 รวม {data['จำนวนวัน']} วัน")
 
-        # Companions
         st.markdown("### 👨‍👩‍👧‍👦 รายชื่อผู้ร่วมเดินทาง (หากไปเป็นหมู่คณะ)")
         num_people = st.number_input("จำนวนผู้ร่วมเดินทาง", min_value=0, max_value=20, step=1)
         companions = []
@@ -159,25 +116,53 @@ elif main_menu == "🧭 การไปราชการ":
     if submitted:
         if not data["ชื่อ-สกุล"]:
             st.error("⚠️ กรุณากรอกชื่อ-นามสกุลของผู้ไปราชการ")
-        elif not data["กิจกรรม"]:
-            st.error("⚠️ กรุณากรอกชื่อกิจกรรม")
         elif int(num_people) > 0 and len(companions) < int(num_people):
             st.error("⚠️ กรุณากรอกชื่อ-นามสกุลผู้ร่วมเดินทางให้ครบ")
-        elif data["จำนวนวัน"] <= 0:
-            st.error("⚠️ จำนวนวันต้องมากกว่า 0")
         else:
             df_scan = df_scan.dropna(how='all')
             df_scan = pd.concat([df_scan, pd.DataFrame([data])], ignore_index=True)
             df_scan.to_excel(FILE_SCAN, index=False)
             st.success("✅ บันทึกข้อมูลการไปราชการเรียบร้อย")
 
-    # Sub-Dashboard
+    # ===== Dashboard ย่อย =====
     if not df_scan.empty:
-        st.markdown("## 📊 สรุปข้อมูลการไปราชการ")
-        st.write(f"📋 ทั้งหมด {len(df_scan)} รายการ รวม {df_scan['จำนวนวัน'].sum()} วัน")
+        st.markdown("## 📊 Dashboard การไปราชการ")
+        total_records = len(df_scan)
+        total_days = df_scan["จำนวนวัน"].sum()
+        unique_people = df_scan["ชื่อ-สกุล"].nunique()
+        avg_days = total_days / unique_people if unique_people > 0 else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("📋 จำนวนครั้งที่ไปราชการ", f"{total_records}")
+        c2.metric("🗓️ จำนวนวันรวม", f"{total_days} วัน")
+        c3.metric("👥 จำนวนบุคลากร", f"{unique_people} คน")
+        c4.metric("⏱️ เฉลี่ยวันต่อคน", f"{avg_days:.2f} วัน")
+
+        st.markdown("### 🏢 กราฟจำนวนวันไปราชการตามกลุ่มงาน")
+        travel_group_chart = df_scan.groupby("กลุ่มงาน")["จำนวนวัน"].sum().sort_values(ascending=False)
+        st.bar_chart(travel_group_chart)
+
+        st.markdown("### 📄 ตารางข้อมูลการไปราชการ")
         st.dataframe(df_scan.astype(str), use_container_width=True)
 
-# ===== Leave Record Form =====
+        # ปุ่มดาวน์โหลดรายงาน
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_scan.to_excel(writer, sheet_name='ข้อมูลไปราชการ', index=False)
+            summary = pd.DataFrame({
+                "หัวข้อ": ["จำนวนครั้ง", "จำนวนวันรวม", "จำนวนบุคลากร", "เฉลี่ยวันต่อคน"],
+                "ค่า": [total_records, total_days, unique_people, round(avg_days, 2)]
+            })
+            summary.to_excel(writer, sheet_name='สรุปภาพรวม', index=False)
+
+        st.download_button(
+            label="📥 ดาวน์โหลดรายงานไปราชการ (Excel)",
+            data=output.getvalue(),
+            file_name=f"รายงานไปราชการ_{dt.date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+# ===== ฟอร์มบันทึกการลา =====
 elif main_menu == "🕒 การลา":
     st.header("📝 แบบฟอร์มบันทึกการลา")
     with st.form("leave_form"):
@@ -187,13 +172,7 @@ elif main_menu == "🕒 การลา":
         data["ประเภทการลา"] = st.selectbox("📌 ประเภทการลา", ["ลาป่วย", "ลากิจ", "ลาพักผ่อน", "อื่นๆ"])
         data["วันที่เริ่ม"] = st.date_input("📅 วันที่เริ่ม", dt.date.today())
         data["วันที่สิ้นสุด"] = st.date_input("📅 วันที่สิ้นสุด", dt.date.today())
-        
-        if data["วันที่สิ้นสุด"] < data["วันที่เริ่ม"]:
-            st.error("วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่ม")
-            data["จำนวนวันลา"] = 0
-        else:
-            data["จำนวนวันลา"] = (data["วันที่สิ้นสุด"] - data["วันที่เริ่ม"]).days + 1
-        
+        data["จำนวนวันลา"] = (data["วันที่สิ้นสุด"] - data["วันที่เริ่ม"]).days + 1
         st.write(f"🗓️ รวมลา {data['จำนวนวันลา']} วัน")
         data["หมายเหตุ"] = st.text_area("📝 หมายเหตุ")
 
@@ -202,80 +181,56 @@ elif main_menu == "🕒 การลา":
     if submitted:
         if not data["ชื่อ-สกุล"]:
             st.error("⚠️ กรุณากรอกชื่อ-นามสกุลของผู้ลา")
-        elif data["จำนวนวันลา"] <= 0:
-            st.error("⚠️ จำนวนวันลาต้องมากกว่า 0")
         else:
             df_report = df_report.dropna(how='all')
             df_report = pd.concat([df_report, pd.DataFrame([data])], ignore_index=True)
             df_report.to_excel(FILE_REPORT, index=False)
             st.success("✅ บันทึกข้อมูลการลาเรียบร้อย")
 
-    # Sub-Dashboard with KPIs
+    # Dashboard การลา
     if not df_report.empty:
-        st.markdown("---")
-        st.markdown("## 📊 Dashboard และตัวชี้วัดข้อมูลการลา (KPIs)")
-
-        # Key Metrics
+        st.markdown("## 📊 Dashboard การลา")
         total_records = len(df_report)
-        total_days = int(df_report['จำนวนวันลา'].sum())
-        unique_staff = df_report['ชื่อ-สกุล'].nunique()
-        avg_days_per_person = total_days / unique_staff if unique_staff > 0 else 0
+        total_days = df_report["จำนวนวันลา"].sum()
+        unique_people = df_report["ชื่อ-สกุล"].nunique()
+        avg_days = total_days / unique_people if unique_people > 0 else 0
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("จำนวนครั้งที่ลาทั้งหมด", f"{total_records:,}")
-        col2.metric("จำนวนวันลารวม", f"{total_days:,}")
-        col3.metric("จำนวนบุคลากรที่ลา", f"{unique_staff:,}")
-        col4.metric("เฉลี่ยวันลาต่อคน", f"{avg_days_per_person:,.2f}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("📋 จำนวนครั้งที่ลา", f"{total_records} ครั้ง")
+        c2.metric("🗓️ จำนวนวันลารวม", f"{total_days} วัน")
+        c3.metric("👥 จำนวนบุคลากรที่ลา", f"{unique_people} คน")
+        c4.metric("⏱️ เฉลี่ยวันลาต่อคน", f"{avg_days:.2f} วัน")
 
-        st.markdown("---")
+        st.markdown("### 📈 กราฟจำนวนวันลาตามประเภท")
+        leave_type_chart = df_report.groupby("ประเภทการลา")["จำนวนวันลา"].sum()
+        st.bar_chart(leave_type_chart)
 
-        # Charts
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("### 📈 จำนวนวันลาตามประเภท")
-            leave_by_type = df_report.groupby('ประเภทการลา')['จำนวนวันลา'].sum()
-            st.bar_chart(leave_by_type)
+        st.markdown("### 🏢 กราฟจำนวนวันลาตามกลุ่มงาน")
+        leave_group_chart = df_report.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().sort_values(ascending=False)
+        st.bar_chart(leave_group_chart)
 
-        with col2:
-            st.markdown("### 🏢 จำนวนวันลาตามกลุ่มงาน")
-            leave_by_group = df_report.groupby('กลุ่มงาน')['จำนวนวันลา'].sum()
-            st.bar_chart(leave_by_group)
-        
-        st.markdown("### 📋 ข้อมูลการลาทั้งหมด")
+        st.markdown("### 📄 ตารางข้อมูลการลา")
         st.dataframe(df_report.astype(str), use_container_width=True)
 
-# ===== Admin Data Management =====
-elif main_menu == "🛠️ แอดมินจัดการข้อมูล":
-    st.header("🔐 ส่วนจัดการข้อมูล (Admin)")
-    password = st.text_input("🔑 ใส่รหัสผ่านเพื่อเข้าใช้งาน", type="password")
-    
-    # Simple password check
-    if password == "admin2568":
-        st.success("✅ เข้าสู่โหมดแอดมินแล้ว")
-        tab1, tab2 = st.tabs(["🧭 ข้อมูลไปราชการ", "🕒 ข้อมูลการลา"])
-        
-        with tab1:
-            st.dataframe(df_scan.astype(str), use_container_width=True)
-            # Use st.download_button for direct download
-            csv = df_scan.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 ดาวน์โหลดข้อมูลไปราชการเป็น CSV",
-                data=csv,
-                file_name='scan_report.csv',
-                mime='text/csv',
-            )
-            
-        with tab2:
-            st.dataframe(df_report.astype(str), use_container_width=True)
-            # Use st.download_button for direct download
-            csv = df_report.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 ดาวน์โหลดข้อมูลการลาเป็น CSV",
-                data=csv,
-                file_name='leave_report.csv',
-                mime='text/csv',
-            )
+        # ปุ่มดาวน์โหลดรายงาน
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_report.to_excel(writer, sheet_name='ข้อมูลการลา', index=False)
+            summary = pd.DataFrame({
+                "หัวข้อ": ["จำนวนครั้งที่ลา", "จำนวนวันลารวม", "จำนวนบุคลากร", "เฉลี่ยวันลาต่อคน"],
+                "ค่า": [total_records, total_days, unique_people, round(avg_days, 2)]
+            })
+            summary.to_excel(writer, sheet_name='สรุปภาพรวม', index=False)
 
-    elif password:
-        st.error("❌ รหัสผ่านไม่ถูกต้อง")
+        st.download_button(
+            label="📥 ดาวน์โหลดรายงานการลา (Excel)",
+            data=output.getvalue(),
+            file_name=f"รายงานการลา_{dt.date.today()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
+# ===== เมนู Admin =====
+elif main_menu == "👩‍💼 Admin":
+    st.header("🛠️ เมนูผู้ดูแลระบบ (หลังบ้าน)")
+    st.info("หน้านี้สงวนสำหรับผู้ดูแลระบบเพื่อจัดการและตรวจสอบข้อมูล")
+    st.write("ในอนาคตสามารถเพิ่มฟังก์ชัน เช่น ลบ/แก้ไขข้อมูล หรือดูสถิติแบบละเอียดได้ที่นี่")
