@@ -1,3 +1,7 @@
 streamlit
 pandas
 openpyxl
+altair
+matplotlib
+fpdf
+xlsxwriter
