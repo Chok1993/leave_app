@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime as dt
-from io import BytesIO
+import altair as alt
 
 # ===== ไฟล์เก็บข้อมูล =====
 FILE_SCAN = "scan_report.xlsx"
@@ -43,31 +43,17 @@ staff_groups = [
 
 # ===== เมนูหลัก =====
 st.title("📋 โปรแกรมบันทึกข้อมูล (สคร.9)")
-main_menu = st.sidebar.radio("เลือกหน้าเมนู", ["📊 Dashboard รวม", "🧭 การไปราชการ", "🕒 การลา", "👩‍💼 Admin"])
-
-# ===== ฟังก์ชันกรองข้อมูลตามเดือน =====
-def filter_by_month(df, start_col="วันที่เริ่ม"):
-    if start_col in df.columns:
-        df = df.copy()
-        df[start_col] = pd.to_datetime(df[start_col], errors="coerce")
-        return df
-    return pd.DataFrame()
+main_menu = st.sidebar.radio("เลือกหน้าเมนู", ["📊 Dashboard รวม", "🧭 การไปราชการ", "🕒 การลา", "🛠️ ผู้ดูแลระบบ (Admin)"])
 
 # ===== Dashboard รวม =====
 if main_menu == "📊 Dashboard รวม":
     st.header("📈 Dashboard สรุปข้อมูลทั้งหมด")
 
-    month_choice = st.selectbox("เลือกเดือน", list(range(1, 13)), format_func=lambda x: f"เดือน {x}")
-    year_choice = st.number_input("ปี พ.ศ.", min_value=2560, max_value=2600, value=2568)
-
-    df_scan_f = filter_by_month(df_scan)
-    df_report_f = filter_by_month(df_report)
-
-    # คำนวณสรุป
-    total_travel = len(df_scan_f)
-    total_leave = len(df_report_f)
-    total_travel_days = df_scan_f["จำนวนวัน"].sum() if "จำนวนวัน" in df_scan_f.columns else 0
-    total_leave_days = df_report_f["จำนวนวันลา"].sum() if "จำนวนวันลา" in df_report_f.columns else 0
+    # --- ตัวชี้วัดหลัก ---
+    total_travel = len(df_scan)
+    total_leave = len(df_report)
+    total_travel_days = df_scan["จำนวนวัน"].sum() if "จำนวนวัน" in df_scan.columns else 0
+    total_leave_days = df_report["จำนวนวันลา"].sum() if "จำนวนวันลา" in df_report.columns else 0
 
     col1, col2 = st.columns(2)
     col1.metric("จำนวนผู้ไปราชการ", f"{total_travel} คน")
@@ -75,14 +61,40 @@ if main_menu == "📊 Dashboard รวม":
     col2.metric("จำนวนผู้ลา", f"{total_leave} คน")
     col2.metric("จำนวนวันลารวม", f"{total_leave_days} วัน")
 
-    # กราฟรวม
-    if not df_scan_f.empty or not df_report_f.empty:
-        st.markdown("### 📊 เปรียบเทียบวันลา-ไปราชการต่อเดือน")
-        df_chart = pd.DataFrame({
-            "ประเภท": ["ไปราชการ", "ลา"],
-            "จำนวนวัน": [total_travel_days, total_leave_days]
-        }).set_index("ประเภท")
-        st.bar_chart(df_chart)
+    # --- สรุปข้อมูลการลาเพิ่มเติม ---
+    if not df_report.empty:
+        st.subheader("🧾 Key Metrics การลา")
+
+        unique_persons = df_report["ชื่อ-สกุล"].nunique()
+        avg_leave = round(df_report["จำนวนวันลา"].mean(), 2) if "จำนวนวันลา" in df_report.columns else 0
+
+        c1, c2 = st.columns(2)
+        c1.metric("จำนวนบุคลากรที่ลา", f"{unique_persons} คน")
+        c2.metric("เฉลี่ยวันลาต่อคน", f"{avg_leave} วัน")
+
+        # --- กราฟ 1: แสดงจำนวนวันลาตามประเภท ---
+        st.markdown("### 📊 จำนวนวันลาตามประเภท")
+        leave_by_type = df_report.groupby("ประเภทการลา")["จำนวนวันลา"].sum().reset_index()
+        chart1 = alt.Chart(leave_by_type).mark_bar().encode(
+            x=alt.X("ประเภทการลา:N", title="ประเภทการลา"),
+            y=alt.Y("จำนวนวันลา:Q", title="จำนวนวันลา"),
+            color="ประเภทการลา"
+        )
+        st.altair_chart(chart1, use_container_width=True)
+
+        # --- กราฟ 2: แสดงจำนวนวันลาตามกลุ่มงาน ---
+        st.markdown("### 🏢 จำนวนวันลาตามกลุ่มงาน")
+        leave_by_group = df_report.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().reset_index()
+        chart2 = alt.Chart(leave_by_group).mark_bar().encode(
+            x=alt.X("กลุ่มงาน:N", sort="-y", title="กลุ่มงาน"),
+            y=alt.Y("จำนวนวันลา:Q", title="จำนวนวันลา"),
+            color="กลุ่มงาน"
+        )
+        st.altair_chart(chart2, use_container_width=True)
+
+        # --- ตารางข้อมูลดิบ ---
+        st.markdown("### 📋 ตารางข้อมูลการลา (ดิบ)")
+        st.dataframe(df_report.astype(str), use_container_width=True)
 
 # ===== ฟอร์มบันทึกการไปราชการ =====
 elif main_menu == "🧭 การไปราชการ":
@@ -100,6 +112,7 @@ elif main_menu == "🧭 การไปราชการ":
         data["จำนวนวัน"] = (data["วันที่สิ้นสุด"] - data["วันที่เริ่ม"]).days + 1
         st.write(f"📆 รวม {data['จำนวนวัน']} วัน")
 
+        # ผู้ร่วมเดินทาง
         st.markdown("### 👨‍👩‍👧‍👦 รายชื่อผู้ร่วมเดินทาง (หากไปเป็นหมู่คณะ)")
         num_people = st.number_input("จำนวนผู้ร่วมเดินทาง", min_value=0, max_value=20, step=1)
         companions = []
@@ -116,6 +129,8 @@ elif main_menu == "🧭 การไปราชการ":
     if submitted:
         if not data["ชื่อ-สกุล"]:
             st.error("⚠️ กรุณากรอกชื่อ-นามสกุลของผู้ไปราชการ")
+        elif not data["กิจกรรม"]:
+            st.error("⚠️ กรุณากรอกชื่อกิจกรรม")
         elif int(num_people) > 0 and len(companions) < int(num_people):
             st.error("⚠️ กรุณากรอกชื่อ-นามสกุลผู้ร่วมเดินทางให้ครบ")
         else:
@@ -124,43 +139,11 @@ elif main_menu == "🧭 การไปราชการ":
             df_scan.to_excel(FILE_SCAN, index=False)
             st.success("✅ บันทึกข้อมูลการไปราชการเรียบร้อย")
 
-    # ===== Dashboard ย่อย =====
+    # Dashboard ย่อย
     if not df_scan.empty:
-        st.markdown("## 📊 Dashboard การไปราชการ")
-        total_records = len(df_scan)
-        total_days = df_scan["จำนวนวัน"].sum()
-        unique_people = df_scan["ชื่อ-สกุล"].nunique()
-        avg_days = total_days / unique_people if unique_people > 0 else 0
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("📋 จำนวนครั้งที่ไปราชการ", f"{total_records}")
-        c2.metric("🗓️ จำนวนวันรวม", f"{total_days} วัน")
-        c3.metric("👥 จำนวนบุคลากร", f"{unique_people} คน")
-        c4.metric("⏱️ เฉลี่ยวันต่อคน", f"{avg_days:.2f} วัน")
-
-        st.markdown("### 🏢 กราฟจำนวนวันไปราชการตามกลุ่มงาน")
-        travel_group_chart = df_scan.groupby("กลุ่มงาน")["จำนวนวัน"].sum().sort_values(ascending=False)
-        st.bar_chart(travel_group_chart)
-
-        st.markdown("### 📄 ตารางข้อมูลการไปราชการ")
+        st.markdown("## 📊 สรุปข้อมูลการไปราชการ")
+        st.write(f"📋 ทั้งหมด {len(df_scan)} รายการ รวม {df_scan['จำนวนวัน'].sum()} วัน")
         st.dataframe(df_scan.astype(str), use_container_width=True)
-
-        # ปุ่มดาวน์โหลดรายงาน
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_scan.to_excel(writer, sheet_name='ข้อมูลไปราชการ', index=False)
-            summary = pd.DataFrame({
-                "หัวข้อ": ["จำนวนครั้ง", "จำนวนวันรวม", "จำนวนบุคลากร", "เฉลี่ยวันต่อคน"],
-                "ค่า": [total_records, total_days, unique_people, round(avg_days, 2)]
-            })
-            summary.to_excel(writer, sheet_name='สรุปภาพรวม', index=False)
-
-        st.download_button(
-            label="📥 ดาวน์โหลดรายงานไปราชการ (Excel)",
-            data=output.getvalue(),
-            file_name=f"รายงานไปราชการ_{dt.date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
 
 # ===== ฟอร์มบันทึกการลา =====
 elif main_menu == "🕒 การลา":
@@ -187,50 +170,175 @@ elif main_menu == "🕒 การลา":
             df_report.to_excel(FILE_REPORT, index=False)
             st.success("✅ บันทึกข้อมูลการลาเรียบร้อย")
 
-    # Dashboard การลา
+    # Dashboard ย่อย
     if not df_report.empty:
-        st.markdown("## 📊 Dashboard การลา")
-        total_records = len(df_report)
-        total_days = df_report["จำนวนวันลา"].sum()
-        unique_people = df_report["ชื่อ-สกุล"].nunique()
-        avg_days = total_days / unique_people if unique_people > 0 else 0
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("📋 จำนวนครั้งที่ลา", f"{total_records} ครั้ง")
-        c2.metric("🗓️ จำนวนวันลารวม", f"{total_days} วัน")
-        c3.metric("👥 จำนวนบุคลากรที่ลา", f"{unique_people} คน")
-        c4.metric("⏱️ เฉลี่ยวันลาต่อคน", f"{avg_days:.2f} วัน")
-
-        st.markdown("### 📈 กราฟจำนวนวันลาตามประเภท")
-        leave_type_chart = df_report.groupby("ประเภทการลา")["จำนวนวันลา"].sum()
-        st.bar_chart(leave_type_chart)
-
-        st.markdown("### 🏢 กราฟจำนวนวันลาตามกลุ่มงาน")
-        leave_group_chart = df_report.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().sort_values(ascending=False)
-        st.bar_chart(leave_group_chart)
-
-        st.markdown("### 📄 ตารางข้อมูลการลา")
+        st.markdown("## 📊 สรุปข้อมูลการลา")
+        st.write(f"📋 ทั้งหมด {len(df_report)} รายการ รวมลา {df_report['จำนวนวันลา'].sum()} วัน")
         st.dataframe(df_report.astype(str), use_container_width=True)
 
-        # ปุ่มดาวน์โหลดรายงาน
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_report.to_excel(writer, sheet_name='ข้อมูลการลา', index=False)
-            summary = pd.DataFrame({
-                "หัวข้อ": ["จำนวนครั้งที่ลา", "จำนวนวันลารวม", "จำนวนบุคลากร", "เฉลี่ยวันลาต่อคน"],
-                "ค่า": [total_records, total_days, unique_people, round(avg_days, 2)]
-            })
-            summary.to_excel(writer, sheet_name='สรุปภาพรวม', index=False)
+# ------------------ ADMIN ------------------
+elif menu == "👩‍💼 Admin":
+    import matplotlib.pyplot as plt
+    from fpdf import FPDF
+    import tempfile
 
-        st.download_button(
-            label="📥 ดาวน์โหลดรายงานการลา (Excel)",
-            data=output.getvalue(),
-            file_name=f"รายงานการลา_{dt.date.today()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    st.header("🔐 เข้าสู่ระบบผู้ดูแล")
+    password = st.text_input("กรอกรหัสผ่าน", type="password")
 
-# ===== เมนู Admin =====
-elif main_menu == "👩‍💼 Admin":
-    st.header("🛠️ เมนูผู้ดูแลระบบ (หลังบ้าน)")
-    st.info("หน้านี้สงวนสำหรับผู้ดูแลระบบเพื่อจัดการและตรวจสอบข้อมูล")
-    st.write("ในอนาคตสามารถเพิ่มฟังก์ชัน เช่น ลบ/แก้ไขข้อมูล หรือดูสถิติแบบละเอียดได้ที่นี่")
+    if password == ADMIN_PASSWORD:
+        st.success("✅ เข้าสู่ระบบสำเร็จ")
+
+        tab1, tab2, tab3 = st.tabs(["🧭 ข้อมูลไปราชการ", "🕒 ข้อมูลการลา", "📈 Dashboard กลุ่มงาน"])
+
+        # ========== แท็บ 1: ไปราชการ ==========
+        with tab1:
+            st.markdown("### 🧭 ข้อมูลการไปราชการทั้งหมด")
+            st.dataframe(df_scan.astype(str), use_container_width=True)
+
+        # ========== แท็บ 2: การลา ==========
+        with tab2:
+            st.markdown("### 🕒 ข้อมูลการลาทั้งหมด")
+            st.dataframe(df_report.astype(str), use_container_width=True)
+
+        # ========== แท็บ 3: Dashboard กลุ่มงาน ==========
+        with tab3:
+            st.markdown("### 📈 Dashboard สรุปข้อมูลตามกลุ่มงาน")
+
+            # ====== ตัวกรองปีและเดือน ======
+            this_year = dt.date.today().year + 543
+            year_choice = st.selectbox("เลือกปี พ.ศ.", list(range(this_year - 3, this_year + 1)), index=3)
+            month_choice = st.selectbox("เลือกเดือน", list(range(1, 13)), format_func=lambda x: f"เดือน {x}")
+
+            # ====== ฟังก์ชันกรองข้อมูล ======
+            def filter_data_by_month(df, start_col, end_col):
+                df = df.copy()
+                df[start_col] = pd.to_datetime(df[start_col], errors="coerce")
+                df[end_col] = pd.to_datetime(df[end_col], errors="coerce")
+                df["ปี"] = df[start_col].dt.year + 543
+                df["เดือน"] = df[start_col].dt.month
+                return df[(df["ปี"] == year_choice) & (df["เดือน"] == month_choice)]
+
+            df_scan_filtered = filter_data_by_month(df_scan, "วันที่เริ่ม", "วันที่สิ้นสุด") if not df_scan.empty else pd.DataFrame()
+            df_report_filtered = filter_data_by_month(df_report, "วันที่เริ่ม", "วันที่สิ้นสุด") if not df_report.empty else pd.DataFrame()
+
+            col1, col2 = st.columns(2)
+
+            # --- กราฟไปราชการ ---
+            fig1, fig2, fig3 = None, None, None
+            if not df_scan_filtered.empty:
+                travel_group = df_scan_filtered.groupby("กลุ่มงาน")["จำนวนวัน"].sum().sort_values(ascending=False).head(5)
+                col1.subheader(f"🧭 Top 5 กลุ่มงานที่ไปราชการมากที่สุด ({month_choice}/{year_choice})")
+                col1.bar_chart(travel_group)
+                fig1 = travel_group.plot(kind="bar", color="skyblue", figsize=(5, 3), title="Top 5 กลุ่มงานไปราชการ").get_figure()
+            else:
+                col1.info("ไม่มีข้อมูลการไปราชการในเดือนที่เลือก")
+
+            # --- กราฟการลา ---
+            if not df_report_filtered.empty:
+                leave_group = df_report_filtered.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().sort_values(ascending=False).head(5)
+                col2.subheader(f"🕒 Top 5 กลุ่มงานที่ลามากที่สุด ({month_choice}/{year_choice})")
+                col2.bar_chart(leave_group)
+                fig2 = leave_group.plot(kind="bar", color="salmon", figsize=(5, 3), title="Top 5 กลุ่มงานลา").get_figure()
+            else:
+                col2.info("ไม่มีข้อมูลการลาในเดือนที่เลือก")
+
+            # ===== กราฟวงกลมประเภทการลา =====
+            st.markdown("### 🥧 สัดส่วนประเภทการลา")
+            if not df_report_filtered.empty and "ประเภทการลา" in df_report_filtered.columns:
+                leave_type = df_report_filtered.groupby("ประเภทการลา")["จำนวนวันลา"].sum()
+                if not leave_type.empty:
+                    fig3, ax = plt.subplots(figsize=(5, 5))
+                    ax.pie(leave_type, labels=leave_type.index, autopct="%1.1f%%", startangle=90)
+                    ax.set_title("สัดส่วนประเภทการลา")
+                    st.pyplot(fig3)
+                else:
+                    st.info("ไม่มีข้อมูลประเภทการลาในเดือนนี้")
+            else:
+                st.info("ไม่มีข้อมูลการลาในเดือนที่เลือก")
+
+            # ===== ตารางสรุปรวม =====
+            st.markdown("### 📋 ตารางสรุปผลรวมตามกลุ่มงาน")
+            summary = None
+            if not df_scan_filtered.empty or not df_report_filtered.empty:
+                travel_sum = (
+                    df_scan_filtered.groupby("กลุ่มงาน")["จำนวนวัน"]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={"จำนวนวัน": "รวมวันไปราชการ"})
+                )
+                leave_sum = (
+                    df_report_filtered.groupby("กลุ่มงาน")["จำนวนวันลา"]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={"จำนวนวันลา": "รวมวันลา"})
+                )
+                summary = pd.merge(travel_sum, leave_sum, on="กลุ่มงาน", how="outer").fillna(0)
+                summary["รวมทั้งหมด"] = summary["รวมวันไปราชการ"] + summary["รวมวันลา"]
+                st.dataframe(summary.sort_values("รวมทั้งหมด", ascending=False), use_container_width=True)
+            else:
+                st.info("ไม่มีข้อมูลในเดือนที่เลือกสำหรับการสรุป")
+
+            # ===== ปุ่มสร้าง PDF =====
+            st.markdown("### 🖨️ พิมพ์รายงานสรุป (PDF)")
+            if st.button("📄 สร้างรายงาน PDF"):
+                pdf = FPDF()
+                pdf.add_page()
+                pdf.add_font('THSarabun', '', 'THSarabunNew.ttf', uni=True)
+                pdf.set_font('THSarabun', '', 16)
+                pdf.cell(0, 10, f"รายงานสรุปผลการลาและไปราชการ เดือน {month_choice} ปี {year_choice}", ln=True, align="C")
+                pdf.ln(10)
+
+                # เก็บไฟล์กราฟชั่วคราว
+                temp_dir = tempfile.gettempdir()
+                if fig1:
+                    path1 = f"{temp_dir}/travel_chart.png"
+                    fig1.savefig(path1)
+                    pdf.image(path1, w=170)
+                if fig2:
+                    path2 = f"{temp_dir}/leave_chart.png"
+                    fig2.savefig(path2)
+                    pdf.image(path2, w=170)
+                if fig3:
+                    path3 = f"{temp_dir}/pie_chart.png"
+                    fig3.savefig(path3)
+                    pdf.image(path3, w=150)
+
+                if summary is not None:
+                    pdf.ln(10)
+                    pdf.set_font('THSarabun', '', 14)
+                    pdf.cell(0, 10, "ตารางสรุปผลรวม (วัน)", ln=True)
+                    pdf.ln(5)
+                    for _, row in summary.iterrows():
+                        pdf.cell(0, 8, f"{row['กลุ่มงาน']} - ไปราชการ {int(row['รวมวันไปราชการ'])} / ลา {int(row['รวมวันลา'])} / รวม {int(row['รวมทั้งหมด'])}", ln=True)
+
+                # ส่งออก PDF
+                pdf_output = f"{temp_dir}/summary_{year_choice}_{month_choice}.pdf"
+                pdf.output(pdf_output)
+                with open(pdf_output, "rb") as f:
+                    st.download_button(
+                        label="📥 ดาวน์โหลดรายงาน PDF",
+                        data=f,
+                        file_name=f"รายงานสรุป_สคร9_{year_choice}_{month_choice}.pdf",
+                        mime="application/pdf"
+                    )
+
+            # ===== ปุ่มดาวน์โหลดรายงาน Excel =====
+            st.markdown("### 📥 ดาวน์โหลดรายงานรวมทั้งหมด (Excel)")
+            def to_excel(download_scan, download_leave):
+                from io import BytesIO
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    download_scan.to_excel(writer, sheet_name="การไปราชการ", index=False)
+                    download_leave.to_excel(writer, sheet_name="การลา", index=False)
+                return output.getvalue()
+
+            excel_data = to_excel(df_scan, df_report)
+            st.download_button(
+                label="📥 ดาวน์โหลดรายงานสรุปทั้งหมด (Excel)",
+                data=excel_data,
+                file_name=f"สรุปรายงาน_สคร9_{dt.date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+    elif password:
+        st.error("❌ รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่")
