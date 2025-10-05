@@ -170,23 +170,169 @@ elif main_menu == "🕒 การลา":
         st.write(f"📋 ทั้งหมด {len(df_report)} รายการ รวมลา {df_report['จำนวนวันลา'].sum()} วัน")
         st.dataframe(df_report.astype(str), use_container_width=True)
 
-# ===============================================================
-# ======================== ADMIN PANEL ==========================
-# ===============================================================
-elif main_menu == "🛠️ ผู้ดูแลระบบ (Admin)":
-    st.header("🔐 เข้าสู่ระบบผู้ดูแลระบบ")
-    password = st.text_input("กรุณากรอกรหัสผ่าน", type="password")
+# ------------------ ADMIN ------------------
+elif menu == "👩‍💼 Admin":
+    import matplotlib.pyplot as plt
+    from fpdf import FPDF
+    import tempfile
+
+    st.header("🔐 เข้าสู่ระบบผู้ดูแล")
+    password = st.text_input("กรอกรหัสผ่าน", type="password")
 
     if password == ADMIN_PASSWORD:
         st.success("✅ เข้าสู่ระบบสำเร็จ")
-        tab1, tab2 = st.tabs(["🧭 ข้อมูลไปราชการ", "🕒 ข้อมูลการลา"])
 
+        tab1, tab2, tab3 = st.tabs(["🧭 ข้อมูลไปราชการ", "🕒 ข้อมูลการลา", "📈 Dashboard กลุ่มงาน"])
+
+        # ========== แท็บ 1: ไปราชการ ==========
         with tab1:
-            st.subheader("🧭 ข้อมูลไปราชการทั้งหมด")
+            st.markdown("### 🧭 ข้อมูลการไปราชการทั้งหมด")
             st.dataframe(df_scan.astype(str), use_container_width=True)
 
+        # ========== แท็บ 2: การลา ==========
         with tab2:
-            st.subheader("🕒 ข้อมูลการลาทั้งหมด")
+            st.markdown("### 🕒 ข้อมูลการลาทั้งหมด")
             st.dataframe(df_report.astype(str), use_container_width=True)
+
+        # ========== แท็บ 3: Dashboard กลุ่มงาน ==========
+        with tab3:
+            st.markdown("### 📈 Dashboard สรุปข้อมูลตามกลุ่มงาน")
+
+            # ====== ตัวกรองปีและเดือน ======
+            this_year = dt.date.today().year + 543
+            year_choice = st.selectbox("เลือกปี พ.ศ.", list(range(this_year - 3, this_year + 1)), index=3)
+            month_choice = st.selectbox("เลือกเดือน", list(range(1, 13)), format_func=lambda x: f"เดือน {x}")
+
+            # ====== ฟังก์ชันกรองข้อมูล ======
+            def filter_data_by_month(df, start_col, end_col):
+                df = df.copy()
+                df[start_col] = pd.to_datetime(df[start_col], errors="coerce")
+                df[end_col] = pd.to_datetime(df[end_col], errors="coerce")
+                df["ปี"] = df[start_col].dt.year + 543
+                df["เดือน"] = df[start_col].dt.month
+                return df[(df["ปี"] == year_choice) & (df["เดือน"] == month_choice)]
+
+            df_scan_filtered = filter_data_by_month(df_scan, "วันที่เริ่ม", "วันที่สิ้นสุด") if not df_scan.empty else pd.DataFrame()
+            df_report_filtered = filter_data_by_month(df_report, "วันที่เริ่ม", "วันที่สิ้นสุด") if not df_report.empty else pd.DataFrame()
+
+            col1, col2 = st.columns(2)
+
+            # --- กราฟไปราชการ ---
+            fig1, fig2, fig3 = None, None, None
+            if not df_scan_filtered.empty:
+                travel_group = df_scan_filtered.groupby("กลุ่มงาน")["จำนวนวัน"].sum().sort_values(ascending=False).head(5)
+                col1.subheader(f"🧭 Top 5 กลุ่มงานที่ไปราชการมากที่สุด ({month_choice}/{year_choice})")
+                col1.bar_chart(travel_group)
+                fig1 = travel_group.plot(kind="bar", color="skyblue", figsize=(5, 3), title="Top 5 กลุ่มงานไปราชการ").get_figure()
+            else:
+                col1.info("ไม่มีข้อมูลการไปราชการในเดือนที่เลือก")
+
+            # --- กราฟการลา ---
+            if not df_report_filtered.empty:
+                leave_group = df_report_filtered.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().sort_values(ascending=False).head(5)
+                col2.subheader(f"🕒 Top 5 กลุ่มงานที่ลามากที่สุด ({month_choice}/{year_choice})")
+                col2.bar_chart(leave_group)
+                fig2 = leave_group.plot(kind="bar", color="salmon", figsize=(5, 3), title="Top 5 กลุ่มงานลา").get_figure()
+            else:
+                col2.info("ไม่มีข้อมูลการลาในเดือนที่เลือก")
+
+            # ===== กราฟวงกลมประเภทการลา =====
+            st.markdown("### 🥧 สัดส่วนประเภทการลา")
+            if not df_report_filtered.empty and "ประเภทการลา" in df_report_filtered.columns:
+                leave_type = df_report_filtered.groupby("ประเภทการลา")["จำนวนวันลา"].sum()
+                if not leave_type.empty:
+                    fig3, ax = plt.subplots(figsize=(5, 5))
+                    ax.pie(leave_type, labels=leave_type.index, autopct="%1.1f%%", startangle=90)
+                    ax.set_title("สัดส่วนประเภทการลา")
+                    st.pyplot(fig3)
+                else:
+                    st.info("ไม่มีข้อมูลประเภทการลาในเดือนนี้")
+            else:
+                st.info("ไม่มีข้อมูลการลาในเดือนที่เลือก")
+
+            # ===== ตารางสรุปรวม =====
+            st.markdown("### 📋 ตารางสรุปผลรวมตามกลุ่มงาน")
+            summary = None
+            if not df_scan_filtered.empty or not df_report_filtered.empty:
+                travel_sum = (
+                    df_scan_filtered.groupby("กลุ่มงาน")["จำนวนวัน"]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={"จำนวนวัน": "รวมวันไปราชการ"})
+                )
+                leave_sum = (
+                    df_report_filtered.groupby("กลุ่มงาน")["จำนวนวันลา"]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={"จำนวนวันลา": "รวมวันลา"})
+                )
+                summary = pd.merge(travel_sum, leave_sum, on="กลุ่มงาน", how="outer").fillna(0)
+                summary["รวมทั้งหมด"] = summary["รวมวันไปราชการ"] + summary["รวมวันลา"]
+                st.dataframe(summary.sort_values("รวมทั้งหมด", ascending=False), use_container_width=True)
+            else:
+                st.info("ไม่มีข้อมูลในเดือนที่เลือกสำหรับการสรุป")
+
+            # ===== ปุ่มสร้าง PDF =====
+            st.markdown("### 🖨️ พิมพ์รายงานสรุป (PDF)")
+            if st.button("📄 สร้างรายงาน PDF"):
+                pdf = FPDF()
+                pdf.add_page()
+                pdf.add_font('THSarabun', '', 'THSarabunNew.ttf', uni=True)
+                pdf.set_font('THSarabun', '', 16)
+                pdf.cell(0, 10, f"รายงานสรุปผลการลาและไปราชการ เดือน {month_choice} ปี {year_choice}", ln=True, align="C")
+                pdf.ln(10)
+
+                # เก็บไฟล์กราฟชั่วคราว
+                temp_dir = tempfile.gettempdir()
+                if fig1:
+                    path1 = f"{temp_dir}/travel_chart.png"
+                    fig1.savefig(path1)
+                    pdf.image(path1, w=170)
+                if fig2:
+                    path2 = f"{temp_dir}/leave_chart.png"
+                    fig2.savefig(path2)
+                    pdf.image(path2, w=170)
+                if fig3:
+                    path3 = f"{temp_dir}/pie_chart.png"
+                    fig3.savefig(path3)
+                    pdf.image(path3, w=150)
+
+                if summary is not None:
+                    pdf.ln(10)
+                    pdf.set_font('THSarabun', '', 14)
+                    pdf.cell(0, 10, "ตารางสรุปผลรวม (วัน)", ln=True)
+                    pdf.ln(5)
+                    for _, row in summary.iterrows():
+                        pdf.cell(0, 8, f"{row['กลุ่มงาน']} - ไปราชการ {int(row['รวมวันไปราชการ'])} / ลา {int(row['รวมวันลา'])} / รวม {int(row['รวมทั้งหมด'])}", ln=True)
+
+                # ส่งออก PDF
+                pdf_output = f"{temp_dir}/summary_{year_choice}_{month_choice}.pdf"
+                pdf.output(pdf_output)
+                with open(pdf_output, "rb") as f:
+                    st.download_button(
+                        label="📥 ดาวน์โหลดรายงาน PDF",
+                        data=f,
+                        file_name=f"รายงานสรุป_สคร9_{year_choice}_{month_choice}.pdf",
+                        mime="application/pdf"
+                    )
+
+            # ===== ปุ่มดาวน์โหลดรายงาน Excel =====
+            st.markdown("### 📥 ดาวน์โหลดรายงานรวมทั้งหมด (Excel)")
+            def to_excel(download_scan, download_leave):
+                from io import BytesIO
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    download_scan.to_excel(writer, sheet_name="การไปราชการ", index=False)
+                    download_leave.to_excel(writer, sheet_name="การลา", index=False)
+                return output.getvalue()
+
+            excel_data = to_excel(df_scan, df_report)
+            st.download_button(
+                label="📥 ดาวน์โหลดรายงานสรุปทั้งหมด (Excel)",
+                data=excel_data,
+                file_name=f"สรุปรายงาน_สคร9_{dt.date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
     elif password:
         st.error("❌ รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่")
