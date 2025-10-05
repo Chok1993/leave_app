@@ -197,58 +197,86 @@ elif main_menu == "🛠️ ผู้ดูแลระบบ (Admin)":
             st.dataframe(df_report.astype(str), use_container_width=True)
 
         # --- TAB 3 ---
-        with tab3:
-            st.subheader("📈 Dashboard สรุปข้อมูลตามกลุ่มงาน")
-            this_year = dt.date.today().year + 543
-            year_choice = st.selectbox("เลือกปี พ.ศ.", list(range(this_year - 3, this_year + 1)), index=3)
-            month_choice = st.selectbox("เลือกเดือน", list(range(1, 13)), format_func=lambda x: f"เดือน {x}")
+with tab3:
+    st.subheader("📈 Dashboard สรุปข้อมูลตามกลุ่มงาน")
 
-            def filter_data_by_month(df, start_col, end_col):
-                df = df.copy()
-                df[start_col] = pd.to_datetime(df[start_col], errors="coerce")
-                df[end_col] = pd.to_datetime(df[end_col], errors="coerce")
-                df["ปี"] = df[start_col].dt.year + 543
-                df["เดือน"] = df[start_col].dt.month
-                return df[(df["ปี"] == year_choice) & (df["เดือน"] == month_choice)]
+    this_year = dt.date.today().year + 543
+    year_choice = st.selectbox("เลือกปี พ.ศ.", list(range(this_year - 3, this_year + 1)), index=3)
+    month_choice = st.selectbox("เลือกเดือน", list(range(1, 13)), format_func=lambda x: f"เดือน {x}")
 
-            df_scan_filtered = filter_data_by_month(df_scan, "วันที่เริ่ม", "วันที่สิ้นสุด") if not df_scan.empty else pd.DataFrame()
-            df_report_filtered = filter_data_by_month(df_report, "วันที่เริ่ม", "วันที่สิ้นสุด") if not df_report.empty else pd.DataFrame()
+    def filter_data_by_month(df, start_col, end_col):
+        df = df.copy()
+        df[start_col] = pd.to_datetime(df[start_col], errors="coerce")
+        df[end_col] = pd.to_datetime(df[end_col], errors="coerce")
+        df["ปี"] = df[start_col].dt.year + 543
+        df["เดือน"] = df[start_col].dt.month
+        return df[(df["ปี"] == year_choice) & (df["เดือน"] == month_choice)]
 
-            col1, col2 = st.columns(2)
-            fig1, fig2, fig3 = None, None, None
+    df_scan_filtered = filter_data_by_month(df_scan, "วันที่เริ่ม", "วันที่สิ้นสุด") if not df_scan.empty else pd.DataFrame()
+    df_report_filtered = filter_data_by_month(df_report, "วันที่เริ่ม", "วันที่สิ้นสุด") if not df_report.empty else pd.DataFrame()
 
-            if not df_scan_filtered.empty:
-                travel_group = df_scan_filtered.groupby("กลุ่มงาน")["จำนวนวัน"].sum().sort_values(ascending=False).head(5)
-                col1.subheader(f"🧭 Top 5 กลุ่มงานที่ไปราชการมากที่สุด ({month_choice}/{year_choice})")
-                col1.bar_chart(travel_group)
-                fig1 = travel_group.plot(kind="bar", color="skyblue", figsize=(5, 3)).get_figure()
-            else:
-                col1.info("ไม่มีข้อมูลการไปราชการ")
+    col1, col2 = st.columns(2)
+    fig1, fig2, fig3 = None, None, None
 
-            if not df_report_filtered.empty:
-                leave_group = df_report_filtered.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().sort_values(ascending=False).head(5)
-                col2.subheader(f"🕒 Top 5 กลุ่มงานที่ลามากที่สุด ({month_choice}/{year_choice})")
-                col2.bar_chart(leave_group)
-                fig2 = leave_group.plot(kind="bar", color="salmon", figsize=(5, 3)).get_figure()
-            else:
-                col2.info("ไม่มีข้อมูลการลา")
+    # ====== กราฟไปราชการ ======
+    if not df_scan_filtered.empty and "กลุ่มงาน" in df_scan_filtered.columns and "จำนวนวัน" in df_scan_filtered.columns:
+        travel_group = df_scan_filtered.groupby("กลุ่มงาน")["จำนวนวัน"].sum().sort_values(ascending=False).head(5)
+        col1.subheader(f"🧭 Top 5 กลุ่มงานที่ไปราชการมากที่สุด ({month_choice}/{year_choice})")
+        col1.bar_chart(travel_group)
+        fig1 = travel_group.plot(kind="bar", color="skyblue", figsize=(5, 3)).get_figure()
+    else:
+        col1.info("ไม่มีข้อมูลหรือไม่มีคอลัมน์ 'กลุ่มงาน/จำนวนวัน'")
 
-            st.markdown("### 🥧 สัดส่วนประเภทการลา")
-            if not df_report_filtered.empty and "ประเภทการลา" in df_report_filtered.columns:
-                leave_type = df_report_filtered.groupby("ประเภทการลา")["จำนวนวันลา"].sum()
-                if not leave_type.empty:
-                    fig3, ax = plt.subplots(figsize=(5, 5))
-                    ax.pie(leave_type, labels=leave_type.index, autopct="%1.1f%%", startangle=90)
-                    ax.set_title("สัดส่วนประเภทการลา")
-                    st.pyplot(fig3)
+    # ====== กราฟการลา ======
+    if not df_report_filtered.empty and "กลุ่มงาน" in df_report_filtered.columns and "จำนวนวันลา" in df_report_filtered.columns:
+        leave_group = df_report_filtered.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().sort_values(ascending=False).head(5)
+        col2.subheader(f"🕒 Top 5 กลุ่มงานที่ลามากที่สุด ({month_choice}/{year_choice})")
+        col2.bar_chart(leave_group)
+        fig2 = leave_group.plot(kind="bar", color="salmon", figsize=(5, 3)).get_figure()
+    else:
+        col2.info("ไม่มีข้อมูลหรือไม่มีคอลัมน์ 'กลุ่มงาน/จำนวนวันลา'")
 
-            st.markdown("### 📋 ตารางสรุปผลรวมตามกลุ่มงาน")
-            if not df_scan_filtered.empty or not df_report_filtered.empty:
-                travel_sum = df_scan_filtered.groupby("กลุ่มงาน")["จำนวนวัน"].sum().reset_index().rename(columns={"จำนวนวัน": "รวมวันไปราชการ"})
-                leave_sum = df_report_filtered.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().reset_index().rename(columns={"จำนวนวันลา": "รวมวันลา"})
-                summary = pd.merge(travel_sum, leave_sum, on="กลุ่มงาน", how="outer").fillna(0)
-                summary["รวมทั้งหมด"] = summary["รวมวันไปราชการ"] + summary["รวมวันลา"]
-                st.dataframe(summary.sort_values("รวมทั้งหมด", ascending=False), use_container_width=True)
+    # ====== กราฟวงกลมประเภทการลา ======
+    st.markdown("### 🥧 สัดส่วนประเภทการลา")
+    if not df_report_filtered.empty and "ประเภทการลา" in df_report_filtered.columns:
+        leave_type = df_report_filtered.groupby("ประเภทการลา")["จำนวนวันลา"].sum()
+        if not leave_type.empty:
+            fig3, ax = plt.subplots(figsize=(5, 5))
+            ax.pie(leave_type, labels=leave_type.index, autopct="%1.1f%%", startangle=90)
+            ax.set_title("สัดส่วนประเภทการลา")
+            st.pyplot(fig3)
+        else:
+            st.info("ไม่มีข้อมูลประเภทการลาในเดือนนี้")
+    else:
+        st.info("ไม่มีข้อมูลการลาในเดือนที่เลือก")
+
+    # ====== ตารางสรุปรวม ======
+    st.markdown("### 📋 ตารางสรุปผลรวมตามกลุ่มงาน")
+    if (
+        not df_scan_filtered.empty
+        and "กลุ่มงาน" in df_scan_filtered.columns
+        and "จำนวนวัน" in df_scan_filtered.columns
+    ) or (
+        not df_report_filtered.empty
+        and "กลุ่มงาน" in df_report_filtered.columns
+        and "จำนวนวันลา" in df_report_filtered.columns
+    ):
+        travel_sum = (
+            df_scan_filtered.groupby("กลุ่มงาน")["จำนวนวัน"].sum().reset_index().rename(columns={"จำนวนวัน": "รวมวันไปราชการ"})
+            if "กลุ่มงาน" in df_scan_filtered.columns and "จำนวนวัน" in df_scan_filtered.columns
+            else pd.DataFrame(columns=["กลุ่มงาน", "รวมวันไปราชการ"])
+        )
+        leave_sum = (
+            df_report_filtered.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().reset_index().rename(columns={"จำนวนวันลา": "รวมวันลา"})
+            if "กลุ่มงาน" in df_report_filtered.columns and "จำนวนวันลา" in df_report_filtered.columns
+            else pd.DataFrame(columns=["กลุ่มงาน", "รวมวันลา"])
+        )
+
+        summary = pd.merge(travel_sum, leave_sum, on="กลุ่มงาน", how="outer").fillna(0)
+        summary["รวมทั้งหมด"] = summary["รวมวันไปราชการ"] + summary["รวมวันลา"]
+        st.dataframe(summary.sort_values("รวมทั้งหมด", ascending=False), use_container_width=True)
+    else:
+        st.info("ไม่มีข้อมูลหรือคอลัมน์ไม่ครบสำหรับสรุปผล")
 
             # PDF
             st.markdown("### 🖨️ พิมพ์รายงานสรุป (PDF)")
@@ -304,3 +332,4 @@ elif main_menu == "🛠️ ผู้ดูแลระบบ (Admin)":
 
     elif password:
         st.error("❌ รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่")
+
