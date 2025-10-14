@@ -11,9 +11,11 @@ from fpdf import FPDF
 import matplotlib.pyplot as plt
 from io import BytesIO
 import os
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
 from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from googleapiclient.errors import HttpError
+import io
 
 # ====================================================
 # 🔐 โหลดข้อมูลจาก Secrets (service_account.json จาก Streamlit Cloud)
@@ -24,22 +26,17 @@ creds = service_account.Credentials.from_service_account_info(
     scopes=["https://www.googleapis.com/auth/drive"]
 )
 
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
-from googleapiclient.errors import HttpError
-import io
-
 # ====================================================
-# 🧭 ตั้งค่า ID ของโฟลเดอร์ Google Drive (ที่คุณแชร์ไว้)
+# 🧭 ตั้งค่า ID ของโฟลเดอร์ Google Drive
 # ====================================================
 
-FOLDER_ID = "1YjoU7QqbMgCIf547HlTq5rzvUK5gXhUI"  # <== แก้ให้ตรงกับโฟลเดอร์จริงของคุณ
+FOLDER_ID = "1YjoU7QqbMgCIf547HlTq5rzvUK5gXhUI"  # ⚙️ แก้ให้ตรงกับโฟลเดอร์จริงของคุณ
 
 # สร้างบริการ Drive API
 service = build('drive', 'v3', credentials=creds)
 
 # ====================================================
-# 🗂️ ฟังก์ชันสำหรับอ่าน/เขียนไฟล์ Excel ใน Google Drive
+# 🗂️ ฟังก์ชันอ่าน/เขียนไฟล์ Excel ใน Google Drive
 # ====================================================
 
 def get_file_id(filename):
@@ -69,7 +66,6 @@ def read_excel_from_drive(filename):
 
 def write_excel_to_drive(filename, df):
     """บันทึก DataFrame กลับขึ้น Google Drive"""
-    # สร้างไฟล์ Excel ชั่วคราวในหน่วยความจำ
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False)
@@ -83,7 +79,6 @@ def write_excel_to_drive(filename, df):
     else:
         file_metadata = {"name": filename, "parents": [FOLDER_ID]}
         service.files().create(body=file_metadata, media_body=media, fields="id").execute()
-
 
 # ====================================================
 # ⚙️ โหลดข้อมูลเริ่มต้น
@@ -114,7 +109,7 @@ staff_groups = [
 # ====================================================
 
 st.title("📋 ระบบติดตามการลาและไปราชการ (สคร.9)")
-menu = st.sidebar.radio("เลือกเมนู", ["📊 Dashboard", "🧭 การไปราชการ", "🕒 การลา"])
+menu = st.sidebar.radio("เลือกเมนู", ["📊 Dashboard", "🧭 การไปราชการ", "🕒 การลา", "🛠️ ผู้ดูแลระบบ"])
 
 # ====================================================
 # 📈 Dashboard
@@ -183,3 +178,107 @@ elif menu == "🕒 การลา":
         df_report = pd.concat([df_report, pd.DataFrame([data])], ignore_index=True)
         write_excel_to_drive(FILE_REPORT, df_report)
         st.success("✅ บันทึกข้อมูลเรียบร้อยแล้ว!")
+
+# ====================================================
+# 🛠️ ระบบผู้ดูแล (Admin) - แก้ไข/ลบเฉพาะรายการ
+# ====================================================
+
+elif menu == "🛠️ ผู้ดูแลระบบ":
+    st.header("🔐 เข้าสู่ระบบผู้ดูแล")
+
+    ADMIN_PASSWORD = "12345"  # 🔑 เปลี่ยนรหัสผ่านได้ที่นี่
+    password = st.text_input("กรอกรหัสผ่าน", type="password")
+
+    if password == ADMIN_PASSWORD:
+        st.success("เข้าสู่ระบบเรียบร้อย ✅")
+
+        tab1, tab2 = st.tabs(["📄 ข้อมูลการไปราชการ", "📋 ข้อมูลการลา"])
+
+        # ============ ข้อมูลการไปราชการ ============
+        with tab1:
+            st.subheader("📄 รายการข้อมูลการไปราชการ")
+
+            if not df_scan.empty:
+                df_scan_display = df_scan.reset_index().rename(columns={"index": "ลำดับ"})
+                df_scan_display["ลำดับ"] = df_scan_display["ลำดับ"] + 1  # ✅ เริ่มนับจาก 1
+                st.dataframe(df_scan_display, use_container_width=True)
+
+                selected_index = st.number_input(
+                    "เลือกหมายเลขลำดับที่ต้องการแก้ไข/ลบ",
+                    min_value=1, max_value=len(df_scan_display), step=1
+                ) - 1
+
+                edit_mode = st.radio("เลือกการดำเนินการ", ["✏️ แก้ไขข้อมูล", "🗑️ ลบรายการ"])
+
+                if edit_mode == "✏️ แก้ไขข้อมูล":
+                    st.write("กรอกข้อมูลใหม่สำหรับรายการนี้:")
+                    updated = {}
+                    updated["ชื่อ-สกุล"] = st.text_input("ชื่อ-สกุล", df_scan.loc[selected_index, "ชื่อ-สกุล"])
+                    updated["กลุ่มงาน"] = st.selectbox("กลุ่มงาน", staff_groups,
+                                                       index=staff_groups.index(df_scan.loc[selected_index, "กลุ่มงาน"]))
+                    updated["กิจกรรม"] = st.text_input("กิจกรรม", df_scan.loc[selected_index, "กิจกรรม"])
+                    updated["สถานที่"] = st.text_input("สถานที่", df_scan.loc[selected_index, "สถานที่"])
+                    updated["วันที่เริ่ม"] = st.date_input("วันที่เริ่ม", df_scan.loc[selected_index, "วันที่เริ่ม"])
+                    updated["วันที่สิ้นสุด"] = st.date_input("วันที่สิ้นสุด", df_scan.loc[selected_index, "วันที่สิ้นสุด"])
+                    updated["จำนวนวัน"] = (updated["วันที่สิ้นสุด"] - updated["วันที่เริ่ม"]).days + 1
+
+                    if st.button("💾 บันทึกการแก้ไข"):
+                        df_scan.loc[selected_index] = updated
+                        write_excel_to_drive(FILE_SCAN, df_scan)
+                        st.success("✅ แก้ไขข้อมูลเรียบร้อยแล้ว!")
+
+                elif edit_mode == "🗑️ ลบรายการ":
+                    if st.button("🗑️ ยืนยันการลบ"):
+                        df_scan = df_scan.drop(selected_index).reset_index(drop=True)
+                        write_excel_to_drive(FILE_SCAN, df_scan)
+                        st.warning("⚠️ ลบข้อมูลเรียบร้อยแล้ว")
+
+            else:
+                st.info("ไม่มีข้อมูลไปราชการในระบบ")
+
+        # ============ ข้อมูลการลา ============
+        with tab2:
+            st.subheader("📋 รายการข้อมูลการลา")
+
+            if not df_report.empty:
+                df_report_display = df_report.reset_index().rename(columns={"index": "ลำดับ"})
+                df_report_display["ลำดับ"] = df_report_display["ลำดับ"] + 1  # ✅ เริ่มนับจาก 1
+                st.dataframe(df_report_display, use_container_width=True)
+
+                selected_index = st.number_input(
+                    "เลือกหมายเลขลำดับที่ต้องการแก้ไข/ลบ (การลา)",
+                    min_value=1, max_value=len(df_report_display), step=1
+                ) - 1
+
+                edit_mode = st.radio("เลือกการดำเนินการ (การลา)", ["✏️ แก้ไขข้อมูล", "🗑️ ลบรายการ"])
+
+                if edit_mode == "✏️ แก้ไขข้อมูล":
+                    st.write("กรอกข้อมูลใหม่สำหรับรายการนี้:")
+                    updated = {}
+                    updated["ชื่อ-สกุล"] = st.text_input("ชื่อ-สกุล", df_report.loc[selected_index, "ชื่อ-สกุล"])
+                    updated["กลุ่มงาน"] = st.selectbox("กลุ่มงาน", staff_groups,
+                                                       index=staff_groups.index(df_report.loc[selected_index, "กลุ่มงาน"]))
+                    updated["ประเภทการลา"] = st.selectbox(
+                        "ประเภทการลา", ["ลาป่วย", "ลากิจ", "ลาพักผ่อน", "อื่นๆ"],
+                        index=["ลาป่วย", "ลากิจ", "ลาพักผ่อน", "อื่นๆ"].index(df_report.loc[selected_index, "ประเภทการลา"])
+                    )
+                    updated["วันที่เริ่ม"] = st.date_input("วันที่เริ่ม", df_report.loc[selected_index, "วันที่เริ่ม"])
+                    updated["วันที่สิ้นสุด"] = st.date_input("วันที่สิ้นสุด", df_report.loc[selected_index, "วันที่สิ้นสุด"])
+                    updated["จำนวนวันลา"] = (updated["วันที่สิ้นสุด"] - updated["วันที่เริ่ม"]).days + 1
+
+                    if st.button("💾 บันทึกการแก้ไข (การลา)"):
+                        df_report.loc[selected_index] = updated
+                        write_excel_to_drive(FILE_REPORT, df_report)
+                        st.success("✅ แก้ไขข้อมูลเรียบร้อยแล้ว!")
+
+                elif edit_mode == "🗑️ ลบรายการ":
+                    if st.button("🗑️ ยืนยันการลบ (การลา)"):
+                        df_report = df_report.drop(selected_index).reset_index(drop=True)
+                        write_excel_to_drive(FILE_REPORT, df_report)
+                        st.warning("⚠️ ลบข้อมูลเรียบร้อยแล้ว")
+
+            else:
+                st.info("ไม่มีข้อมูลการลาในระบบ")
+
+    elif password != "":
+        st.error("❌ รหัสผ่านไม่ถูกต้อง")
