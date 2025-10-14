@@ -1,6 +1,6 @@
 # ====================================================
-# โปรแกรมบันทึกข้อมูลการลา / การไปราชการ (สคร.9)
-# ✅ เชื่อมต่อกับ Google Drive โดยใช้ Service Account (สำหรับ Streamlit Cloud)
+# โปรแกรมติดตามการลาและไปราชการ (สคร.9)
+# ✅ เวอร์ชันเชื่อมต่อกับ Google Shared Drive โดยใช้ Service Account (Streamlit Cloud)
 # ====================================================
 
 import streamlit as st
@@ -10,15 +10,13 @@ import altair as alt
 from fpdf import FPDF
 import matplotlib.pyplot as plt
 from io import BytesIO
-import os
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
-from googleapiclient.errors import HttpError
 import io
 
 # ====================================================
-# 🔐 โหลดข้อมูลจาก Secrets (service_account.json จาก Streamlit Cloud)
+# 🔐 โหลดข้อมูลจาก Secrets (service_account.json ใน Streamlit Cloud)
 # ====================================================
 
 creds = service_account.Credentials.from_service_account_info(
@@ -27,28 +25,29 @@ creds = service_account.Credentials.from_service_account_info(
 )
 
 # ====================================================
-# 🧭 ตั้งค่า ID ของโฟลเดอร์ Google Drive
+# 🧭 ตั้งค่า ID ของ Shared Drive และโฟลเดอร์ใน Drive
 # ====================================================
+# 👉 โฟลเดอร์ Shared Drive ที่แชร์ให้ service account แล้ว
+FOLDER_ID = "1YFJZvs59ahRHmlRrKcQwepWJz6A-4B7d"
 
-FOLDER_ID = "1YjoU7QqbMgCIf547HlTq5rzvUK5gXhUI"  # แก้ให้ตรงกับโฟลเดอร์จริงของคุณ
-service = build('drive', 'v3', credentials=creds)
+# สร้างบริการ Google Drive API
+service = build("drive", "v3", credentials=creds)
 
 # ====================================================
 # 🗂️ ฟังก์ชันสำหรับอ่าน/เขียนไฟล์ Excel ใน Google Drive
 # ====================================================
 
 def get_file_id(filename):
-    """ค้นหาไฟล์ใน Google Drive ตามชื่อ"""
-    try:
-        results = service.files().list(
-            q=f"name='{filename}' and '{FOLDER_ID}' in parents and trashed=false",
-            fields="files(id, name)"
-        ).execute()
-        files = results.get("files", [])
-        return files[0]["id"] if files else None
-    except HttpError as e:
-        st.error(f"❌ ไม่สามารถเข้าถึง Google Drive ได้: {e}")
-        return None
+    """ค้นหาไฟล์ในโฟลเดอร์ Shared Drive ตามชื่อ"""
+    query = f"name='{filename}' and '{FOLDER_ID}' in parents and trashed=false"
+    results = service.files().list(
+        q=query,
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
+    files = results.get("files", [])
+    return files[0]["id"] if files else None
 
 
 def read_excel_from_drive(filename):
@@ -56,34 +55,48 @@ def read_excel_from_drive(filename):
     file_id = get_file_id(filename)
     if not file_id:
         return pd.DataFrame()
-    request = service.files().get_media(fileId=file_id)
+    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
     while not done:
-        status, done = downloader.next_chunk()
+        _, done = downloader.next_chunk()
     fh.seek(0)
     return pd.read_excel(fh)
 
 
 def write_excel_to_drive(filename, df):
-    """บันทึก DataFrame กลับขึ้น Google Drive"""
+    """บันทึก DataFrame กลับขึ้น Shared Drive"""
     try:
+        # สร้างไฟล์ Excel ชั่วคราวในหน่วยความจำ
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
             df.to_excel(writer, index=False)
         output.seek(0)
 
         file_id = get_file_id(filename)
-        media = MediaIoBaseUpload(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        media = MediaIoBaseUpload(
+            output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
         if file_id:
-            service.files().update(fileId=file_id, media_body=media).execute()
+            service.files().update(
+                fileId=file_id,
+                media_body=media,
+                supportsAllDrives=True
+            ).execute()
         else:
-            file_metadata = {"name": filename, "parents": [FOLDER_ID]}
-            service.files().create(body=file_metadata, media_body=media, fields="id").execute()
-
-    except HttpError as e:
+            file_metadata = {
+                "name": filename,
+                "parents": [FOLDER_ID]
+            }
+            service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields="id",
+                supportsAllDrives=True
+            ).execute()
+    except Exception as e:
         st.error(f"❌ เกิดข้อผิดพลาดในการเขียนไฟล์: {e}")
 
 # ====================================================
@@ -103,10 +116,13 @@ df_report = read_excel_from_drive(FILE_REPORT)
 staff_groups = [
     "กลุ่มโรคติดต่อ", "กลุ่มระบาดวิทยาและตอบโต้ภาวะฉุกเฉินทางสาธารณสุข",
     "กลุ่มพัฒนาองค์กร", "ศูนย์ควบคุมโรคติดต่อนำโดยแมลงที่ 9.1 จ.ชัยภูมิ",
-    "ศูนย์ควบคุมโรคติดต่อนำโดยแมลงที่ 9.2 จ.บุรีรัมย์", "ศูนย์ควบคุมโรคติดต่อนำโดยแมลงที่ 9.3 จ.สุรินทร์",
-    "ศูนย์ควบคุมโรคติดต่อนำโดยแมลงที่ 9.4 ปากช่อง", "ด่านควบคุมโรคช่องจอม จ.สุรินทร์",
+    "ศูนย์ควบคุมโรคติดต่อนำโดยแมลงที่ 9.2 จ.บุรีรัมย์",
+    "ศูนย์ควบคุมโรคติดต่อนำโดยแมลงที่ 9.3 จ.สุรินทร์",
+    "ศูนย์ควบคุมโรคติดต่อนำโดยแมลงที่ 9.4 ปากช่อง",
+    "ด่านควบคุมโรคช่องจอม จ.สุรินทร์",
     "กลุ่มโรคไม่ติดต่อ", "งานควบคุมโรคเขตเมือง", "กลุ่มโรคติดต่อเรื้อรัง",
-    "กลุ่มห้องปฏิบัติการทางการแพทย์", "กลุ่มสื่อสารความเสี่ยง", "กลุ่มโรคจากการประกอบอาชีพและสิ่งแวดล้อม",
+    "กลุ่มห้องปฏิบัติการทางการแพทย์", "กลุ่มสื่อสารความเสี่ยง",
+    "กลุ่มโรคจากการประกอบอาชีพและสิ่งแวดล้อม",
     "ศูนย์บริการเวชศาสตร์ป้องกัน", "กลุ่มบริหารทั่วไป", "กลุ่มพัฒนานวัตกรรมและวิจัย"
 ]
 
@@ -114,10 +130,8 @@ staff_groups = [
 # 🧭 เมนูหลัก
 # ====================================================
 
-st.sidebar.title("เลือกเมนู")
-menu = st.sidebar.radio("", ["📊 Dashboard", "🧭 การไปราชการ", "🕒 การลา", "🧑‍💼 ผู้ดูแลระบบ"])
-
 st.title("📋 ระบบติดตามการลาและไปราชการ (สคร.9)")
+menu = st.sidebar.radio("เลือกเมนู", ["📊 Dashboard", "🧭 การไปราชการ", "🕒 การลา", "🧑‍💼 ผู้ดูแลระบบ"])
 
 # ====================================================
 # 📈 Dashboard
@@ -135,8 +149,6 @@ if menu == "📊 Dashboard":
 
     if not df_report.empty:
         leave_by_type = df_report.groupby("ประเภทการลา")["จำนวนวันลา"].sum().reset_index()
-        leave_by_type["ลำดับ"] = range(1, len(leave_by_type) + 1)
-        st.dataframe(leave_by_type)
         st.altair_chart(
             alt.Chart(leave_by_type).mark_bar().encode(
                 x="ประเภทการลา", y="จำนวนวันลา", color="ประเภทการลา"
@@ -192,17 +204,22 @@ elif menu == "🕒 การลา":
         st.success("✅ บันทึกข้อมูลเรียบร้อยแล้ว!")
 
 # ====================================================
-# 👩‍💼 ผู้ดูแลระบบ
+# 🧑‍💼 ผู้ดูแลระบบ
 # ====================================================
 
 elif menu == "🧑‍💼 ผู้ดูแลระบบ":
-    st.header("📦 จัดการข้อมูล")
-    st.write("คุณสามารถดาวน์โหลดข้อมูลปัจจุบันทั้งหมดได้ที่นี่ 👇")
+    st.header("ผู้ดูแลระบบ (ดูข้อมูลทั้งหมด)")
 
-    col1, col2 = st.columns(2)
-    with col1:
+    tab1, tab2 = st.tabs(["📘 ข้อมูลการไปราชการ", "📗 ข้อมูลการลา"])
+
+    with tab1:
         if not df_scan.empty:
-            st.download_button("📥 ดาวน์โหลดข้อมูลไปราชการ", df_scan.to_csv(index=False).encode('utf-8-sig'), "scan_report.csv")
-    with col2:
+            st.dataframe(df_scan)
+            csv = df_scan.to_csv(index=False).encode("utf-8")
+            st.download_button("📥 ดาวน์โหลดข้อมูลไปราชการ (CSV)", csv, "scan_report.csv", "text/csv")
+
+    with tab2:
         if not df_report.empty:
-            st.download_button("📥 ดาวน์โหลดข้อมูลการลา", df_report.to_csv(index=False).encode('utf-8-sig'), "leave_report.csv")
+            st.dataframe(df_report)
+            csv = df_report.to_csv(index=False).encode("utf-8")
+            st.download_button("📥 ดาวน์โหลดข้อมูลการลา (CSV)", csv, "leave_report.csv", "text/csv")
