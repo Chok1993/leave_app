@@ -3,4 +3,4 @@ pandas
 altair
 fpdf
 matplotlib
-pydrive
+pydrive2
