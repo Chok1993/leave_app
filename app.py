@@ -1,6 +1,6 @@
 # ====================================================
 # 📋 โปรแกรมติดตามการลาและไปราชการ (สคร.9)
-# ✅ Shared Drive + Admin + Dashboard + Attendance รวม (เวอร์ชัน Dashboard Pro)
+# ✅ Shared Drive + Admin + Dashboard + Attendance รวม (เวอร์ชันแก้ไข Heatmap)
 # ====================================================
 
 import io
@@ -29,19 +29,42 @@ ADMIN_PASSWORD = st.secrets.get("admin_password", "admin123") # รหัสผ�
 # ===========================
 # 🗂️ Shared Drive Config
 # ===========================
-# 👉 ID ของโฟลเดอร์ใน Google Drive ที่เก็บไฟล์ข้อมูล
 FOLDER_ID = "1YFJZvs59ahRHmlRrKcQwepWJz6A-4B7d"
 
 # ชื่อไฟล์มาตรฐาน
-FILE_ATTEND = "attendance_report.xlsx" # สแกนนิ้ว
-FILE_LEAVE  = "leave_report.xlsx"      # การลา
-FILE_TRAVEL = "travel_report.xlsx"     # ไปราชการ
+FILE_ATTEND = "attendance_report.xlsx"
+FILE_LEAVE  = "leave_report.xlsx"
+FILE_TRAVEL = "travel_report.xlsx"
 
 service = build("drive", "v3", credentials=creds)
 
 # ===========================
 # 🔧 Drive Helpers
 # ===========================
+@st.cache_data(ttl=600)
+def read_excel_from_drive(filename: str) -> pd.DataFrame:
+    """อ่านไฟล์ Excel จาก Shared Drive; ถ้าไม่มีไฟล์ จะคืนค่า DataFrame ว่าง"""
+    try:
+        file_id = get_file_id(filename)
+        if not file_id:
+            return pd.DataFrame()
+        req = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, req)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.seek(0)
+        try:
+            return pd.read_excel(fh)
+        except Exception:
+            fh.seek(0)
+            return pd.read_excel(fh, engine="openpyxl")
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์ {filename}: {e}")
+        return pd.DataFrame()
+
+
 def get_file_id(filename: str):
     """หา file ID ในโฟลเดอร์เป้าหมายบน Google Drive"""
     q = f"name='{filename}' and '{FOLDER_ID}' in parents and trashed=false"
@@ -54,23 +77,6 @@ def get_file_id(filename: str):
     files = res.get("files", [])
     return files[0]["id"] if files else None
 
-def read_excel_from_drive(filename: str) -> pd.DataFrame:
-    """อ่านไฟล์ Excel จาก Shared Drive; ถ้าไม่มีไฟล์ จะคืนค่า DataFrame ว่าง"""
-    file_id = get_file_id(filename)
-    if not file_id:
-        return pd.DataFrame()
-    req = service.files().get_media(fileId=file_id, supportsAllDrives=True)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, req)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.seek(0)
-    try:
-        return pd.read_excel(fh)
-    except Exception:
-        fh.seek(0)
-        return pd.read_excel(fh, engine="openpyxl")
 
 def write_excel_to_drive(filename: str, df: pd.DataFrame):
     """บันทึก DataFrame กลับไปยังไฟล์ Excel บน Shared Drive"""
@@ -83,11 +89,11 @@ def write_excel_to_drive(filename: str, df: pd.DataFrame):
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     file_id = get_file_id(filename)
-    if file_id: # ถ้ามีไฟล์อยู่แล้ว ให้อัปเดต
+    if file_id:
         service.files().update(
             fileId=file_id, media_body=media, supportsAllDrives=True
         ).execute()
-    else: # ถ้าไม่มี ให้สร้างไฟล์ใหม่
+    else:
         service.files().create(
             body={"name": filename, "parents": [FOLDER_ID]},
             media_body=media,
@@ -99,7 +105,6 @@ def write_excel_to_drive(filename: str, df: pd.DataFrame):
 # 📥 Load & Normalize Data
 # ===========================
 def to_date(s):
-    """แปลงข้อมูลเป็น Date Object (รองรับหลาย format)"""
     if pd.isna(s): return pd.NaT
     try:
         return pd.to_datetime(s).date()
@@ -107,14 +112,12 @@ def to_date(s):
         return pd.NaT
 
 def to_time(s):
-    """แปลงข้อมูลเป็น Time Object (รองรับหลาย format)"""
     if pd.isna(s): return None
     try:
         return pd.to_datetime(str(s)).time()
     except (ValueError, TypeError):
         return None
 
-# --- โหลดข้อมูลสแกน (Attendance) ---
 df_att = read_excel_from_drive(FILE_ATTEND)
 if not df_att.empty:
     name_col = 'ชื่อพนักงาน' if 'ชื่อพนักงาน' in df_att.columns else 'ชื่อ-สกุล'
@@ -127,7 +130,6 @@ if not df_att.empty:
 else:
     df_att = pd.DataFrame(columns=['ชื่อ-สกุล','วันที่','เวลาเข้า','เวลาออก','สาย','ออกก่อน','หมายเหตุ'])
 
-# --- โหลดข้อมูลการลา (Leave) ---
 df_leave = read_excel_from_drive(FILE_LEAVE)
 if not df_leave.empty:
     for c in ['วันที่เริ่ม', 'วันที่สิ้นสุด']:
@@ -136,7 +138,6 @@ if not df_leave.empty:
 else:
     df_leave = pd.DataFrame(columns=['ชื่อ-สกุล','กลุ่มงาน','ประเภทการลา','วันที่เริ่ม','วันที่สิ้นสุด','จำนวนวันลา','หมายเหตุ'])
 
-# --- โหลดข้อมูลไปราชการ (Travel) ---
 df_travel = read_excel_from_drive(FILE_TRAVEL)
 if not df_travel.empty:
     for c in ['วันที่เริ่ม', 'วันที่สิ้นสุด']:
@@ -145,35 +146,34 @@ if not df_travel.empty:
 else:
     df_travel = pd.DataFrame(columns=['ชื่อ-สกุล','กลุ่มงาน','กิจกรรม','สถานที่','วันที่เริ่ม','วันที่สิ้นสุด','จำนวนวัน','หมายเหตุ'])
 
+# =================================================================
+# 🧪 Helpers & Data Processing
+# =================================================================
+@st.cache_data
+def get_daily_status(_df_leave, _df_travel):
+    def expand_date_range(df, start_col='วันที่เริ่ม', end_col='วันที่สิ้นสุด'):
+        out = []
+        for _, r in df.iterrows():
+            s, e = r.get(start_col), r.get(end_col)
+            if pd.isna(s) or pd.isna(e) or s > e:
+                continue
+            for d in pd.date_range(s, e, freq='D'):
+                row = {'ชื่อ-สกุล': r.get('ชื่อ-สกุล'), 'วันที่': d.date()}
+                if 'ประเภทการลา' in r:
+                    row['สถานะ'] = f"ลา({r.get('ประเภทการลา', '')})"
+                elif 'กิจกรรม' in r:
+                    row['สถานะ'] = "ไปราชการ"
+                out.append(row)
+        return pd.DataFrame(out)
 
-# =================================================================
-# 🧪 Helpers: ขยายช่วงวันที่ (Leave/Travel) ให้เป็นรายวัน
-# =================================================================
-def expand_date_range(df, start_col='วันที่เริ่ม', end_col='วันที่สิ้นสุด'):
-    """ขยาย DataFrame ที่มีช่วงวันที่ ให้กลายเป็นข้อมูลรายวัน"""
-    out = []
-    for _, r in df.iterrows():
-        s, e = r.get(start_col), r.get(end_col)
-        if pd.isna(s) or pd.isna(e) or s > e:
-            continue
-        for d in pd.date_range(s, e, freq='D'):
-            row = {'ชื่อ-สกุล': r.get('ชื่อ-สกุล'), 'วันที่': d.date()}
-            if 'ประเภทการลา' in r:
-                row['สถานะ'] = f"ลา({r.get('ประเภทการลา', '')})"
-            elif 'กิจกรรม' in r:
-                row['สถานะ'] = "ไปราชการ"
-            out.append(row)
-    return pd.DataFrame(out)
+    daily_leave = expand_date_range(_df_leave)
+    daily_travel = expand_date_range(_df_travel)
+    daily_status = pd.concat([daily_leave, daily_travel]).drop_duplicates(subset=['ชื่อ-สกุล', 'วันที่'], keep='first')
+    return daily_status
 
-daily_leave = expand_date_range(df_leave)
-daily_travel = expand_date_range(df_travel)
-daily_status = pd.concat([daily_leave, daily_travel]).drop_duplicates(subset=['ชื่อ-สกุล', 'วันที่'], keep='first')
+daily_status = get_daily_status(df_leave, df_travel)
 
-# =================================================================
-# 🧩 รวมข้อมูลทั้งหมด (Attendance + Leave + Travel)
-# =================================================================
 def determine_status(row, status_map):
-    """(Helper) จัดลำดับความสำคัญและกำหนดสถานะการทำงานในแต่ละวัน"""
     status = status_map.get((row['ชื่อ-สกุล'], row['วันที่']))
     if status:
         return status
@@ -187,7 +187,6 @@ def determine_status(row, status_map):
     return 'ไม่พบข้อมูล'
 
 def build_attendance_view(month: int, year: int):
-    """สร้างมุมมองการมาปฏิบัติงานรายเดือน"""
     start_date = dt.date(year, month, 1)
     end_date = (start_date + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)
 
@@ -210,9 +209,8 @@ def build_attendance_view(month: int, year: int):
 
     return att_m, pivot
 
-
 # ====================================================
-# 🎯 UI Constants
+# 🎯 UI Constants & Main App
 # ====================================================
 staff_groups = sorted([
     "กลุ่มโรคติดต่อ", "กลุ่มระบาดวิทยาและตอบโต้ภาวะฉุกเฉินทางสาธารณสุข", "กลุ่มพัฒนาองค์กร", "กลุ่มบริหารทั่วไป", "กลุ่มโรคไม่ติดต่อ",
@@ -223,21 +221,13 @@ staff_groups = sorted([
 ])
 leave_types = ["ลาป่วย", "ลากิจ", "ลาพักผ่อน", "อื่นๆ"]
 
-# ====================================================
-# 🧭 Navigation & App Body
-# ====================================================
 st.title("📋 ระบบติดตามการลา ไปราชการ และการมาปฏิบัติงาน (สคร.9)")
+menu = st.sidebar.radio("เลือกเมนู", ["📊 Dashboard", "📅 การมาปฏิบัติงาน", "🧭 การไปราชการ", "🕒 การลา", "🧑‍💼 ผู้ดูแลระบบ"])
 
-menu = st.sidebar.radio(
-    "เลือกเมนู",
-    ["📊 Dashboard", "📅 การมาปฏิบัติงาน", "🧭 การไปราชการ", "🕒 การลา", "🧑‍💼 ผู้ดูแลระบบ"]
-)
-
-# --- 📊 Dashboard (เวอร์ชันอัปเกรด) ---
+# --- 📊 Dashboard ---
 if menu == "📊 Dashboard":
     st.header("📊 Dashboard ภาพรวมและข้อมูลเชิงลึก")
-    
-    # --- 1. Key Metrics ---
+
     st.markdown("#### **ภาพรวมสะสม**")
     col1, col2, col3 = st.columns(3)
     col1.metric("เดินทางราชการ (ครั้ง)", len(df_travel))
@@ -245,11 +235,8 @@ if menu == "📊 Dashboard":
     col3.metric("ข้อมูลสแกน (แถว)", len(df_att))
     st.markdown("---")
 
-    # --- 2. Analysis Charts (จัด Layout ใหม่) ---
     col_chart1, col_chart2 = st.columns(2)
-
     with col_chart1:
-        # --- กราฟ: จำนวนวันลารวม แยกตามกลุ่มงาน ---
         st.markdown("##### **การลาแยกตามกลุ่มงาน**")
         if not df_leave.empty and 'กลุ่มงาน' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
             leave_by_group = df_leave.groupby('กลุ่มงาน')['จำนวนวันลา'].sum().sort_values(ascending=False).reset_index()
@@ -257,15 +244,12 @@ if menu == "📊 Dashboard":
                 x=alt.X('จำนวนวันลา:Q', title='รวมจำนวนวันลา'),
                 y=alt.Y('กลุ่มงาน:N', sort='-x', title='กลุ่มงาน'),
                 tooltip=['กลุ่มงาน', 'จำนวนวันลา']
-            ).properties(
-                height=300
-            )
+            ).properties(height=300)
             st.altair_chart(chart_group_leave, use_container_width=True)
         else:
             st.info("ไม่มีข้อมูลการลาเพียงพอที่จะแสดงผล")
 
     with col_chart2:
-        # --- กราฟ: 5 อันดับเจ้าหน้าที่ที่ไปราชการบ่อยที่สุด ---
         st.markdown("##### **ผู้เดินทางราชการบ่อยที่สุด (Top 5)**")
         if not df_travel.empty and 'ชื่อ-สกุล' in df_travel.columns:
             top_travelers = df_travel['ชื่อ-สกุล'].value_counts().nlargest(5).reset_index()
@@ -274,76 +258,69 @@ if menu == "📊 Dashboard":
                 x=alt.X('จำนวนครั้ง:Q', title='จำนวนครั้งไปราชการ'),
                 y=alt.Y('ชื่อ-สกุล:N', sort='-x', title='ชื่อ-สกุล'),
                 tooltip=['ชื่อ-สกุล', 'จำนวนครั้ง']
-            ).properties(
-                height=300
-            )
+            ).properties(height=300)
             st.altair_chart(chart_top_travel, use_container_width=True)
         else:
             st.info("ไม่มีข้อมูลการเดินทางราชการ")
 
-    # --- 3. Time Series Trend ---
     st.markdown("##### **แนวโน้มการลา (รายเดือน)**")
-    if not daily_leave.empty:
-        # แปลงวันที่เป็น text 'YYYY-MM' เพื่อการจัดกลุ่ม
-        daily_leave['เดือน'] = pd.to_datetime(daily_leave['วันที่']).dt.strftime('%Y-%m')
-        leave_trend = daily_leave.groupby('เดือน').size().reset_index(name='จำนวนวันลา')
-        
-        chart_trend = alt.Chart(leave_trend).mark_line(point=True, strokeWidth=3).encode(
-            x=alt.X('เดือน:T', title='เดือน'),
-            y=alt.Y('จำนวนวันลา:Q', title='รวมจำนวนวันลา (ทุกประเภท)'),
-            tooltip=['เดือน', 'จำนวนวันลา']
-        ).properties(
-             title='จำนวนวันลาทั้งหมดในแต่ละเดือน'
-        )
-        st.altair_chart(chart_trend, use_container_width=True)
-    else:
-        st.info("ไม่มีข้อมูลการลาสำหรับแสดงแนวโน้ม")
+    if not daily_status.empty:
+        daily_leave_only = daily_status[daily_status['สถานะ'].str.contains("ลา", na=False)].copy()
+        if not daily_leave_only.empty:
+            daily_leave_only['เดือน'] = pd.to_datetime(daily_leave_only['วันที่']).dt.strftime('%Y-%m')
+            leave_trend = daily_leave_only.groupby('เดือน').size().reset_index(name='จำนวนวันลา')
+            chart_trend = alt.Chart(leave_trend).mark_line(point=True, strokeWidth=3).encode(
+                x=alt.X('เดือน:T', title='เดือน'),
+                y=alt.Y('จำนวนวันลา:Q', title='รวมจำนวนวันลา (ทุกประเภท)'),
+                tooltip=['เดือน', 'จำนวนวันลา']
+            ).properties(title='จำนวนวันลาทั้งหมดในแต่ละเดือน')
+            st.altair_chart(chart_trend, use_container_width=True)
+        else:
+            st.info("ไม่มีข้อมูลการลาสำหรับแสดงแนวโน้ม")
     st.markdown("---")
-
+    
     # --- 4. Heatmap Calendar ---
     st.markdown("#### **ปฏิทิน Heatmap (สรุปการลาและไปราชการ)**")
-    
-    # ตัวเลือกสำหรับ Heatmap
     today = dt.date.today()
     colh1, colh2 = st.columns([1,2])
     sel_month_h = colh1.selectbox("เลือกเดือน (สำหรับ Heatmap)", range(1, 13), index=today.month-1, format_func=lambda m: f"{m:02d}", key="hm_month")
     sel_year_h = colh1.number_input("เลือกปี (ค.ศ.)", value=today.year, min_value=2020, max_value=2050, key="hm_year")
 
-    # เตรียมข้อมูลสำหรับ Heatmap
-    start_date = dt.date(sel_year_h, sel_month_h, 1)
-    end_date = (start_date + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)
+    start_date_h = dt.date(sel_year_h, sel_month_h, 1)
+    end_date_h = (start_date_h + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)
     
-    # กรองข้อมูลเฉพาะเดือนที่เลือก
-    monthly_status = daily_status[(daily_status['วันที่'] >= start_date) & (daily_status['วันที่'] <= end_date)]
+    monthly_status = daily_status[(daily_status['วันที่'] >= start_date_h) & (daily_status['วันที่'] <= end_date_h)]
     
     if not monthly_status.empty:
-        # นับจำนวนคนในแต่ละวัน
         heatmap_data = monthly_status.groupby('วันที่').size().reset_index(name='จำนวนคน')
         
-        # สร้าง Heatmap
+        # --- ‼️ CODE HAS BEEN FIXED HERE ‼️ ---
         heatmap = alt.Chart(heatmap_data).mark_rect().encode(
             x=alt.X('date(วันที่):O', title='วันที่'),
             y=alt.Y('day(วันที่):O', title='วันในสัปดาห์', sort='descending'),
             color=alt.Color('จำนวนคน:Q', scale=alt.Scale(scheme='lighttealblue'), title='จำนวนคน'),
-            tooltip=[alt.Tooltip('utchmonthdate(วันที่)', title='วันที่'), alt.Tooltip('จำนวนคน:Q', title='จำนวนคน (ลา/ราชการ)')]
+            # FIX: Changed 'utchmonthdate' to a standard temporal format
+            tooltip=[
+                alt.Tooltip('วันที่:T', title='วันที่', format='%A, %B %d, %Y'),
+                alt.Tooltip('จำนวนคน:Q', title='จำนวนคน (ลา/ราชการ)')
+            ]
         ).properties(
             title=f"ภาพรวมกำลังคน เดือน {sel_month_h}/{sel_year_h}"
         )
         
-        # เพิ่มตัวเลขวันที่ลงบนปฏิทิน
         text = heatmap.mark_text(baseline='middle').encode(
             text='date(วันที่):O',
             color=alt.condition(
-                alt.datum.จำนวนคน > 5, # ถ้ามีคนลา/ราชการเยอะ ให้ตัวอักษรเป็นสีขาว
+                alt.datum.จำนวนคน > 5,
                 alt.value('white'),
                 alt.value('black')
             )
         )
-        
         st.altair_chart(heatmap + text, use_container_width=True)
     else:
         st.info(f"ไม่พบข้อมูลการลาหรือไปราชการในเดือน {sel_month_h}/{sel_year_h}")
 
+# The rest of the app code remains the same...
 
 # --- 📅 Attendance View ---
 elif menu == "📅 การมาปฏิบัติงาน":
@@ -397,6 +374,7 @@ elif menu == "🧭 การไปราชการ":
             df_travel_new = pd.concat([df_travel, pd.DataFrame([data])], ignore_index=True)
             write_excel_to_drive(FILE_TRAVEL, df_travel_new)
             st.success("✅ บันทึกข้อมูลไปราชการเรียบร้อยแล้ว!")
+            st.rerun()
 
     st.markdown("--- \n ### 📋 ข้อมูลปัจจุบัน")
     st.dataframe(df_travel.astype(str).sort_values('วันที่เริ่ม', ascending=False), use_container_width=True, height=420)
@@ -424,6 +402,7 @@ elif menu == "🕒 การลา":
             df_leave_new = pd.concat([df_leave, pd.DataFrame([data])], ignore_index=True)
             write_excel_to_drive(FILE_LEAVE, df_leave_new)
             st.success("✅ บันทึกข้อมูลการลาเรียบร้อยแล้ว!")
+            st.rerun()
 
     st.markdown("--- \n ### 📋 ข้อมูลปัจจุบัน")
     st.dataframe(df_leave.astype(str).sort_values('วันที่เริ่ม', ascending=False), use_container_width=True, height=420)
