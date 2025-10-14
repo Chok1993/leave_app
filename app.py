@@ -1,5 +1,6 @@
 # =====================================
 # 📋 โปรแกรมบันทึกข้อมูลการลา / การไปราชการ (สคร.9)
+# ✅ รองรับการอัปโหลดไปยัง Google Drive ด้วย Service Account
 # =====================================
 
 import streamlit as st
@@ -9,29 +10,20 @@ import altair as alt
 from fpdf import FPDF
 import matplotlib.pyplot as plt
 from io import BytesIO
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive
+from pydrive2.auth import ServiceAccountCredentials
+from pydrive2.drive import GoogleDrive
 import os
 
-# ===== เชื่อมต่อ Google Drive =====
+# ===== เชื่อมต่อ Google Drive ด้วย Service Account =====
 def connect_drive():
-    gauth = GoogleAuth()
-    gauth.LoadClientConfigFile("credentials.json")
-    gauth.LoadCredentialsFile("mycreds.txt")
-
-    if gauth.credentials is None:
-        gauth.LocalWebserverAuth()  # เปิดเว็บให้ล็อกอินครั้งแรก
-    elif gauth.access_token_expired:
-        gauth.Refresh()
-    else:
-        gauth.Authorize()
-
-    gauth.SaveCredentialsFile("mycreds.txt")
-    return GoogleDrive(gauth)
+    scope = ["https://www.googleapis.com/auth/drive"]
+    gauth = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", scope)
+    drive = GoogleDrive(gauth)
+    return drive
 
 drive = connect_drive()
 
-# ===== Folder ID ของ Google Drive (ใส่ของคุณเอง) =====
+# ===== Folder ID ของ Google Drive (ของคุณ) =====
 DRIVE_FOLDER_ID = "1YjoU7QqbMgCIf547HlTq5rzvUK5gXhUI"
 
 # ===== ตั้งค่าพื้นฐานไฟล์ =====
@@ -67,13 +59,11 @@ staff_groups = [
 # ===== ฟังก์ชันอัปโหลดไฟล์ขึ้น Google Drive =====
 def upload_to_drive(local_path, folder_id):
     file_name = os.path.basename(local_path)
-
     # 🔍 ลบไฟล์เดิมชื่อเดียวกัน (ถ้ามี)
     file_list = drive.ListFile({'q': f"'{folder_id}' in parents and trashed=false"}).GetList()
     for f in file_list:
         if f['title'] == file_name:
             f.Delete()
-
     # 📤 อัปโหลดไฟล์ใหม่
     gfile = drive.CreateFile({'title': file_name, 'parents': [{'id': folder_id}]})
     gfile.SetContentFile(local_path)
