@@ -1,6 +1,6 @@
 # ====================================================
 # 📋 โปรแกรมติดตามการลาและไปราชการ (สคร.9)
-# ✅ Final Version: แก้ไข NameError
+# ✅ Final Version: แก้ไข Dashboard ที่แสดงผลว่าง
 # ====================================================
 
 import io
@@ -13,7 +13,6 @@ import streamlit as st
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-# ‼️ --- แก้ไขบรรทัดนี้ --- ‼️
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload, MediaFileUpload
 
 # ===========================
@@ -175,7 +174,43 @@ if menu == "หน้าหลัก":
 
 elif menu == "📊 Dashboard":
     st.header("📊 Dashboard ภาพรวมและข้อมูลเชิงลึก")
-    # (โค้ด Dashboard)
+
+    # --- Key Metrics ---
+    st.markdown("#### **ภาพรวมสะสม**")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("เดินทางราชการ (ครั้ง)", len(df_travel))
+    col2.metric("การลา (ครั้ง)", len(df_leave))
+    col3.metric("ข้อมูลสแกน (แถว)", len(df_att))
+    st.markdown("---")
+
+    # --- Analysis Charts ---
+    col_chart1, col_chart2 = st.columns(2)
+    with col_chart1:
+        st.markdown("##### **การลาแยกตามกลุ่มงาน**")
+        if not df_leave.empty and 'กลุ่มงาน' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
+            leave_by_group = df_leave.groupby('กลุ่มงาน')['จำนวนวันลา'].sum().sort_values(ascending=False).reset_index()
+            chart_group_leave = alt.Chart(leave_by_group).mark_bar().encode(
+                x=alt.X('จำนวนวันลา:Q', title='รวมจำนวนวันลา'),
+                y=alt.Y('กลุ่มงาน:N', sort='-x', title='กลุ่มงาน'),
+                tooltip=['กลุ่มงาน', 'จำนวนวันลา']
+            ).properties(height=300)
+            st.altair_chart(chart_group_leave, use_container_width=True)
+        else:
+            st.info("ไม่มีข้อมูลการลาเพียงพอที่จะแสดงผล")
+
+    with col_chart2:
+        st.markdown("##### **ผู้เดินทางราชการบ่อยที่สุด (Top 5)**")
+        if not df_travel.empty and 'ชื่อ-สกุล' in df_travel.columns:
+            top_travelers = df_travel['ชื่อ-สกุล'].value_counts().nlargest(5).reset_index()
+            top_travelers.columns = ['ชื่อ-สกุล', 'จำนวนครั้ง']
+            chart_top_travel = alt.Chart(top_travelers).mark_bar(color='#ff8c00').encode(
+                x=alt.X('จำนวนครั้ง:Q', title='จำนวนครั้งไปราชการ'),
+                y=alt.Y('ชื่อ-สกุล:N', sort='-x', title='ชื่อ-สกุล'),
+                tooltip=['ชื่อ-สกุล', 'จำนวนครั้ง']
+            ).properties(height=300)
+            st.altair_chart(chart_top_travel, use_container_width=True)
+        else:
+            st.info("ไม่มีข้อมูลการเดินทางราชการ")
 
 elif menu == "📅 การมาปฏิบัติงาน":
     st.header("📅 สรุปการมาปฏิบัติงานรายเดือน")
