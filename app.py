@@ -1,6 +1,6 @@
 # ====================================================
 # 📋 โปรแกรมติดตามการลาและไปราชการ (สคร.9)
-# ✅ Final Version: แนบไฟล์, นับวันทำการ, UI/UX, Admin Tools
+# ✅ Final Version: แก้ไข NameError
 # ====================================================
 
 import io
@@ -13,7 +13,8 @@ import streamlit as st
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaFileUpload
+# ‼️ --- แก้ไขบรรทัดนี้ --- ‼️
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload, MediaFileUpload
 
 # ===========================
 # 🔐 Auth & App Config
