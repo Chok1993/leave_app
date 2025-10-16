@@ -117,7 +117,6 @@ def upload_pdf_to_drive(file_object, filename, folder_id):
     service.permissions().create(fileId=file.get('id'), body=permission, supportsAllDrives=True).execute()
     
     return file.get('webViewLink')
-
 # ---------------------------------------------
 
 def count_weekdays(start_date, end_date):
@@ -125,7 +124,6 @@ def count_weekdays(start_date, end_date):
         return np.busday_count(start_date, end_date + dt.timedelta(days=1))
     return 0
 
-# (ส่วน Load & Normalize Data เหมือนเดิม)
 df_att = read_excel_from_drive(FILE_ATTEND)
 df_leave = read_excel_from_drive(FILE_LEAVE)
 df_travel = read_excel_from_drive(FILE_TRAVEL)
@@ -164,7 +162,13 @@ if menu == "หน้าหลัก":
             "โปรดเลือกเมนูทางซ้ายเพื่อเริ่มต้นใช้งาน")
     st.image("https://ddc.moph.go.th/uploads/files/11120210817094038.jpg", caption="สคร.9 นครราชสีมา")
 
-# (ส่วน Dashboard, การมาปฏิบัติงาน เหมือนเดิม)
+elif menu == "📊 Dashboard":
+    st.header("📊 Dashboard ภาพรวมและข้อมูลเชิงลึก")
+    # (โค้ด Dashboard เหมือนเดิม)
+
+elif menu == "📅 การมาปฏิบัติงาน":
+    st.header("📅 สรุปการมาปฏิบัติงานรายเดือน")
+    # (โค้ดส่วนนี้เหมือนเดิม)
 
 elif menu == "🧭 การไปราชการ":
     st.header("🧭 บันทึกการไปราชการ (สำหรับหมู่คณะ)")
@@ -241,7 +245,9 @@ elif menu == "🧭 การไปราชการ":
     search_name_travel = st.text_input("พิมพ์ชื่อ-สกุลเพื่อค้นหา (ไปราชการ)", "")
     if search_name_travel:
         df_filtered_travel = df_travel[df_travel['ชื่อ-สกุล'].str.contains(search_name_travel, case=False, na=False)]
-        st.dataframe(df_filtered_travel.astype(str))
+        st.dataframe(df_filtered_travel.astype(str), column_config={
+                         "ลิงก์เอกสาร": st.column_config.LinkColumn("เอกสารแนบ", display_text="🔗 เปิดไฟล์")
+                     })
     else:
         st.markdown("### 📋 ข้อมูลปัจจุบันทั้งหมด")
         # ⭐ ทำให้ลิงก์ในตารางสามารถคลิกได้
@@ -250,12 +256,10 @@ elif menu == "🧭 การไปราชการ":
                          "ลิงก์เอกสาร": st.column_config.LinkColumn("เอกสารแนบ", display_text="🔗 เปิดไฟล์")
                      })
 
-# (ส่วน การลา และ ผู้ดูแลระบบ เหมือนเดิม)
 elif menu == "🕒 การลา":
     st.header("🕒 บันทึกข้อมูลการลา")
 
     with st.form("form_leave"):
-        # ... (โค้ดฟอร์มเหมือนเดิม) ...
         col1, col2 = st.columns(2)
         with col1:
             name = st.text_input("ชื่อ-สกุล", disabled=st.session_state.submitted, help="กรอกชื่อและนามสกุลเต็ม")
@@ -281,7 +285,7 @@ elif menu == "🕒 การลา":
         else:
             with st.spinner('⏳ กำลังบันทึกข้อมูล...'):
                 backup_excel(FILE_LEAVE, df_leave)
-                data["จำนวนวันลา"] = count_weekdays(data["วันที่เริ่ม"], data["สิ้นสุด"])
+                data["จำนวนวันลา"] = count_weekdays(data["วันที่เริ่ม"], data["วันที่สิ้นสุด"])
                 data["last_update"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
                 df_leave_new = pd.concat([df_leave, pd.DataFrame([data])], ignore_index=True)
                 write_excel_to_drive(FILE_LEAVE, df_leave_new)
