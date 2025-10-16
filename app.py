@@ -204,106 +204,184 @@ elif menu == "📊 Dashboard":
             st.info("ไม่มีข้อมูลไปราชการ")
 
 # ----------------------------
-# 📅 การมาปฏิบัติงาน (เวอร์ชันสมบูรณ์)
+# 📅 การมาปฏิบัติงาน (เวอร์ชันใหม่ ตรวจไขว้ 3 ฐานข้อมูล)
 # ----------------------------
 elif menu == "📅 การมาปฏิบัติงาน":
-    st.header("📅 สรุปการมาปฏิบัติงาน")
+    st.header("📅 สรุปการมาปฏิบัติงานรายวัน (ตรวจสอบจากสแกน + ลา + ราชการ)")
 
     if df_att.empty:
         st.warning("ยังไม่มีข้อมูลสแกนเข้า-ออกในระบบ")
-    else:
-        required_cols = ["วันที่", "เวลาเข้า", "เวลาออก", "หมายเหตุ"]
-        missing_cols = [col for col in required_cols if col not in df_att.columns]
-        if missing_cols:
-            st.error(f"⚠️ ไม่พบคอลัมน์สำคัญในไฟล์ attendance_report.xlsx: {', '.join(missing_cols)}")
-            st.stop()
+        st.stop()
 
-        # ✅ ตรวจหาชื่อคอลัมน์ที่ใช้แทนชื่อบุคลากร
-        name_col = None
-        for possible in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"]:
-            if possible in df_att.columns:
-                name_col = possible
-                break
-        if not name_col:
-            st.error("⚠️ ไม่พบคอลัมน์ชื่อบุคลากร (เช่น 'ชื่อพนักงาน' หรือ 'ชื่อ-สกุล')")
-            st.stop()
+    # ✅ ตรวจสอบชื่อคอลัมน์บุคลากร
+    name_col = None
+    for possible in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"]:
+        if possible in df_att.columns:
+            name_col = possible
+            break
+    if not name_col:
+        st.error("⚠️ ไม่พบคอลัมน์ชื่อบุคลากร (เช่น 'ชื่อพนักงาน' หรือ 'ชื่อ-สกุล')")
+        st.stop()
 
-        # แปลงวันที่
-        df_att["วันที่"] = pd.to_datetime(df_att["วันที่"], errors="coerce")
-        df_att = df_att.dropna(subset=["วันที่"])
-        if df_att.empty:
-            st.warning("⚠️ ไม่มีข้อมูลวันที่ที่ถูกต้อง")
-        else:
-            df_att["เดือน"] = df_att["วันที่"].dt.strftime("%Y-%m")
+    # ✅ แปลงวันที่ทั้งหมด
+    df_att["วันที่"] = pd.to_datetime(df_att["วันที่"], errors="coerce")
+    for df in [df_leave, df_travel]:
+        for c in ["วันที่เริ่ม", "วันที่สิ้นสุด"]:
+            if c in df.columns:
+                df[c] = pd.to_datetime(df[c], errors="coerce")
 
-            # ===== 1️⃣ แนวโน้มการสแกนรายเดือน =====
-            st.subheader("📈 แนวโน้มจำนวนการสแกนรายเดือน")
-            monthly_summary = df_att.groupby("เดือน")[name_col].count().reset_index(name="จำนวนรายการสแกน")
-            if not monthly_summary.empty:
-                st.line_chart(monthly_summary.set_index("เดือน"))
-                st.dataframe(monthly_summary, use_container_width=True)
+    # ✅ สร้างคอลัมน์เดือน (เช่น "2025-10")
+    df_att["เดือน"] = df_att["วันที่"].dt.strftime("%Y-%m")
+    months = sorted(df_att["เดือน"].dropna().unique())
+    selected_month = st.selectbox("เลือกเดือนที่ต้องการดู", months, index=len(months)-1)
+    selected_names = st.multiselect("เลือกชื่อบุคลากร", sorted(df_att[name_col].unique()), max_selections=3)
+
+    # กรองเฉพาะเดือนที่เลือก
+    df_month = df_att[df_att["เดือน"] == selected_month].copy()
+    if selected_names:
+        df_month = df_month[df_month[name_col].isin(selected_names)]
+
+    # 🧮 สร้างรายการวันที่ภายในเดือนที่เลือก
+    if df_month.empty:
+        st.info("ไม่มีข้อมูลสแกนในเดือนที่เลือก")
+        st.stop()
+
+    month_start = df_month["วันที่"].min().date().replace(day=1)
+    month_end = (month_start + pd.offsets.MonthEnd(0)).date()
+    date_range = pd.date_range(month_start, month_end, freq="D")
+
+    records = []
+    for name in df_month[name_col].unique():
+        for d in date_range:
+            rec = {"ชื่อพนักงาน": name, "วันที่": d.date(), "สถานะ": "", "เวลาเข้า": "", "เวลาออก": "", "หมายเหตุ": ""}
+            att = df_month[(df_month[name_col]==name) & (df_month["วันที่"]==d)]
+            if not att.empty:
+                rec["เวลาเข้า"] = att.iloc[0].get("เวลาเข้า", "")
+                rec["เวลาออก"] = att.iloc[0].get("เวลาออก", "")
+                rec["หมายเหตุ"] = att.iloc[0].get("หมายเหตุ", "")
+                if str(rec["หมายเหตุ"]).startswith(("เสาร์","อาทิตย์")):
+                    rec["สถานะ"] = "วันหยุด"
+                elif "สาย" in str(rec["หมายเหตุ"]).lower():
+                    rec["สถานะ"] = "สาย"
+                elif "ออกก่อน" in str(rec["หมายเหตุ"]).lower():
+                    rec["สถานะ"] = "ออกก่อน"
+                else:
+                    rec["สถานะ"] = "มาปกติ"
             else:
-                st.info("ไม่มีข้อมูลเพียงพอที่จะแสดงแนวโน้ม")
-            st.markdown("---")
+                # ❌ ไม่มีข้อมูลในวันนั้น — ตรวจสอบลาและราชการ
+                in_leave = (
+                    not df_leave.empty and
+                    (df_leave["ชื่อ-สกุล"] == name).any() and
+                    (df_leave[(df_leave["ชื่อ-สกุล"] == name) &
+                              (df_leave["วันที่เริ่ม"] <= d) &
+                              (df_leave["วันที่สิ้นสุด"] >= d)].shape[0] > 0)
+                )
+                in_travel = (
+                    not df_travel.empty and
+                    (df_travel["ชื่อ-สกุล"] == name).any() and
+                    (df_travel[(df_travel["ชื่อ-สกุล"] == name) &
+                               (df_travel["วันที่เริ่ม"] <= d) &
+                               (df_travel["วันที่สิ้นสุด"] >= d)].shape[0] > 0)
+                )
+                if in_leave:
+                    leave_type = df_leave.loc[
+                        (df_leave["ชื่อ-สกุล"] == name) &
+                        (df_leave["วันที่เริ่ม"] <= d) &
+                        (df_leave["วันที่สิ้นสุด"] >= d),
+                        "ประเภทการลา"
+                    ].iloc[0]
+                    rec["สถานะ"] = f"ลา ({leave_type})"
+                elif in_travel:
+                    rec["สถานะ"] = "ไปราชการ"
+                elif d.weekday() >= 5:
+                    rec["สถานะ"] = "วันหยุด"
+                else:
+                    rec["สถานะ"] = "ขาดงาน"
+            records.append(rec)
 
-            # ===== 2️⃣ การสแกนแยกตามกลุ่มงาน =====
-            if "กลุ่มงาน" in df_att.columns:
-                st.subheader("📊 จำนวนการสแกนแยกตามกลุ่มงาน")
-                group_summary = df_att.groupby("กลุ่มงาน")[name_col].count().reset_index(name="จำนวนรายการสแกน")
-                group_summary = group_summary.sort_values("จำนวนรายการสแกน", ascending=False)
+    df_daily = pd.DataFrame(records)
+    df_daily = df_daily.sort_values(["ชื่อพนักงาน", "วันที่"])
 
-                chart_group = alt.Chart(group_summary).mark_bar(color="#4C9A2A").encode(
-                    x=alt.X("จำนวนรายการสแกน:Q", title="จำนวนรายการ"),
-                    y=alt.Y("กลุ่มงาน:N", sort="-x", title="กลุ่มงาน"),
-                    tooltip=["กลุ่มงาน", "จำนวนรายการสแกน"]
-                ).properties(height=350)
-                st.altair_chart(chart_group, use_container_width=True)
-                st.dataframe(group_summary, use_container_width=True)
-            else:
-                st.info("❕ ไม่มีคอลัมน์ 'กลุ่มงาน' ในข้อมูล attendance_report.xlsx")
+    # 🎨 แสดงผลตารางพร้อมสี
+    def color_status(val):
+        colors = {
+            "มาปกติ": "background-color:#d4edda",
+            "สาย": "background-color:#ffeeba",
+            "ออกก่อน": "background-color:#f8d7da",
+            "ลา": "background-color:#d1ecf1",
+            "ไปราชการ": "background-color:#fff3cd",
+            "วันหยุด": "background-color:#e2e3e5",
+            "ขาดงาน": "background-color:#f5c6cb",
+        }
+        for key in colors:
+            if key in str(val):
+                return colors[key]
+        return ""
 
-            st.markdown("---")
+    st.markdown("### 📋 ตารางสรุปสถานะรายวัน")
+    st.dataframe(df_daily.style.applymap(color_status, subset=["สถานะ"]), use_container_width=True, height=600)
 
-            # ===== 3️⃣ สัดส่วนสถานะการสแกน =====
-            st.subheader("🔥 สัดส่วนสถานะการมาทำงาน")
-            if "สถานะ" not in df_att.columns:
-                def determine_status(row):
-                    if pd.isna(row.get("เวลาเข้า")) and pd.isna(row.get("เวลาออก")):
-                        return "ไม่พบข้อมูล"
-                    elif "สาย" in str(row.get("หมายเหตุ", "")).lower():
-                        return "สาย"
-                    else:
-                        return "มาปกติ"
-                df_att["สถานะ"] = df_att.apply(determine_status, axis=1)
+    # 📤 ปุ่มดาวน์โหลด
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df_daily.to_excel(writer, index=False, sheet_name="สรุปการมาปฏิบัติงาน")
+    output.seek(0)
+    st.download_button(
+        "📥 ดาวน์โหลดรายงานรายวัน (Excel)",
+        data=output,
+        file_name=f"รายงานการมาปฏิบัติงาน_{selected_month}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    # --------------------------------------------------
+    # 📊 สรุปสถิติรวมต่อเดือนต่อคน
+    # --------------------------------------------------
+    st.markdown("---")
+    st.subheader("📊 สรุปสถิติรวมต่อเดือนต่อคน")
 
-            pie_data = df_att["สถานะ"].value_counts().reset_index()
-            pie_data.columns = ["สถานะ", "จำนวน"]
-            chart_pie = alt.Chart(pie_data).mark_arc(innerRadius=50).encode(
-                theta="จำนวน:Q",
-                color="สถานะ:N",
-                tooltip=["สถานะ", "จำนวน"]
-            ).properties(width=400, height=400)
-            st.altair_chart(chart_pie, use_container_width=True)
-            st.dataframe(pie_data, use_container_width=True)
+    # ฟังก์ชันตัดชื่อสถานะให้สั้น เช่น 'ลา (ลาป่วย)' -> 'ลา'
+    def simplify_status(s):
+        if isinstance(s, str):
+            if s.startswith("ลา"):
+                return "ลา"
+            return s
+        return s
 
-            st.markdown("---")
+    df_daily["สถานะย่อ"] = df_daily["สถานะ"].apply(simplify_status)
 
-            # ===== 📤 ปุ่มดาวน์โหลดสรุป =====
-            st.subheader("📥 ดาวน์โหลดสรุปรายงาน (Excel)")
-            from io import BytesIO
-            with pd.ExcelWriter(BytesIO(), engine="xlsxwriter") as writer:
-                monthly_summary.to_excel(writer, sheet_name="แนวโน้มรายเดือน", index=False)
-                if "กลุ่มงาน" in df_att.columns:
-                    group_summary.to_excel(writer, sheet_name="สแกนตามกลุ่มงาน", index=False)
-                pie_data.to_excel(writer, sheet_name="สถานะการสแกน", index=False)
-                writer.close()
-                excel_data = writer.book.filename.getvalue()
-            st.download_button(
-                label="📥 ดาวน์โหลดสรุปรายงานการมาปฏิบัติงาน.xlsx",
-                data=excel_data,
-                file_name="รายงานสรุปการมาปฏิบัติงาน.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+    summary = (
+        df_daily.groupby(["ชื่อพนักงาน", "สถานะย่อ"])
+        .size()
+        .reset_index(name="จำนวนวัน")
+        .pivot(index="ชื่อพนักงาน", columns="สถานะย่อ", values="จำนวนวัน")
+        .fillna(0)
+        .astype(int)
+        .reset_index()
+    )
+
+    # รวมจำนวนวันทั้งหมด
+    summary["รวมทั้งหมด"] = summary.drop(columns=["ชื่อพนักงาน"]).sum(axis=1)
+
+    # เรียงคอลัมน์ตามลำดับที่อ่านง่าย
+    preferred_order = ["มาปกติ", "สาย", "ออกก่อน", "ลา", "ไปราชการ", "ขาดงาน", "วันหยุด", "รวมทั้งหมด"]
+    cols_present = [c for c in preferred_order if c in summary.columns]
+    summary = summary[["ชื่อพนักงาน"] + cols_present]
+
+    st.dataframe(summary, use_container_width=True)
+
+    # 📤 ดาวน์โหลดสรุปสถิติรวม
+    from io import BytesIO
+    excel_output = BytesIO()
+    with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
+        df_daily.to_excel(writer, index=False, sheet_name="รายวัน")
+        summary.to_excel(writer, index=False, sheet_name="สรุปสถิติรวม")
+    excel_output.seek(0)
+    st.download_button(
+        "📥 ดาวน์โหลดรายงานสรุป (รายวัน + รวมต่อเดือน)",
+        data=excel_output,
+        file_name=f"รายงานสรุป_มาปฏิบัติงาน_{selected_month}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
 
 
 
@@ -432,6 +510,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         st.error("รหัสผ่านไม่ถูกต้อง ❌")
     else:
         st.info("กรุณาใส่รหัสผ่านเพื่อเข้าถึงฟังก์ชันผู้ดูแลระบบ")
+
 
 
 
