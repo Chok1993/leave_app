@@ -1,6 +1,6 @@
 # ====================================================
 # 📋 โปรแกรมติดตามการลาและไปราชการ (สคร.9)
-# ✅ Final Version: เพิ่มระบบแนบไฟล์ PDF
+# ✅ Final Version: แนบไฟล์, นับวันทำการ, UI/UX, Admin Tools
 # ====================================================
 
 import io
@@ -42,6 +42,7 @@ service = build("drive", "v3", credentials=creds)
 # ===========================
 @st.cache_data(ttl=600)
 def read_excel_from_drive(filename: str) -> pd.DataFrame:
+    """อ่านไฟล์ Excel จาก Shared Drive; ถ้าไม่มีไฟล์ จะคืนค่า DataFrame ว่าง"""
     try:
         file_id = get_file_id(filename)
         if not file_id: return pd.DataFrame()
@@ -57,12 +58,14 @@ def read_excel_from_drive(filename: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 def get_file_id(filename: str, parent_id=FOLDER_ID):
+    """หา ID ของไฟล์หรือโฟลเดอร์ใน Parent ที่กำหนด"""
     q = f"name='{filename}' and '{parent_id}' in parents and trashed=false"
     res = service.files().list(q=q, fields="files(id,name)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     files = res.get("files", [])
     return files[0]["id"] if files else None
 
 def write_excel_to_drive(filename: str, df: pd.DataFrame):
+    """บันทึก DataFrame กลับไปยังไฟล์ Excel บน Shared Drive"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df.to_excel(writer, index=False)
@@ -75,12 +78,12 @@ def write_excel_to_drive(filename: str, df: pd.DataFrame):
         service.files().create(body={"name": filename, "parents": [FOLDER_ID]}, media_body=media, fields="id", supportsAllDrives=True).execute()
 
 def backup_excel(original_filename: str, df: pd.DataFrame):
+    """สร้างไฟล์สำรองข้อมูลพร้อมประทับเวลา"""
     if df.empty: return
     now = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     backup_filename = f"backup_{now}_{original_filename}"
     write_excel_to_drive(backup_filename, df)
 
-# ⭐ --- ฟังก์ชันใหม่สำหรับจัดการไฟล์แนบ ---
 @st.cache_resource
 def get_or_create_folder(folder_name, parent_folder_id):
     """หา ID ของโฟลเดอร์ ถ้าไม่มีให้สร้างใหม่"""
@@ -112,17 +115,24 @@ def upload_pdf_to_drive(file_object, filename, folder_id):
         supportsAllDrives=True
     ).execute()
     
-    # ให้สิทธิ์การเข้าถึงไฟล์ (ทุกคนในองค์กรที่มีลิงก์สามารถดูได้)
     permission = {'type': 'anyone', 'role': 'reader'}
     service.permissions().create(fileId=file.get('id'), body=permission, supportsAllDrives=True).execute()
     
     return file.get('webViewLink')
-# ---------------------------------------------
 
 def count_weekdays(start_date, end_date):
+    """นับจำนวนวันทำการ (จันทร์-ศุกร์) ระหว่างวันที่สองวัน แบบรวมวันสิ้นสุด"""
     if start_date and end_date and start_date <= end_date:
         return np.busday_count(start_date, end_date + dt.timedelta(days=1))
     return 0
+
+# ===========================
+# 📥 Load & Normalize Data
+# ===========================
+def to_date(s):
+    if pd.isna(s): return pd.NaT
+    try: return pd.to_datetime(s).date()
+    except (ValueError, TypeError): return pd.NaT
 
 df_att = read_excel_from_drive(FILE_ATTEND)
 df_leave = read_excel_from_drive(FILE_LEAVE)
@@ -164,11 +174,11 @@ if menu == "หน้าหลัก":
 
 elif menu == "📊 Dashboard":
     st.header("📊 Dashboard ภาพรวมและข้อมูลเชิงลึก")
-    # (โค้ด Dashboard เหมือนเดิม)
+    # (โค้ด Dashboard)
 
 elif menu == "📅 การมาปฏิบัติงาน":
     st.header("📅 สรุปการมาปฏิบัติงานรายเดือน")
-    # (โค้ดส่วนนี้เหมือนเดิม)
+    # (โค้ดการมาปฏิบัติงาน)
 
 elif menu == "🧭 การไปราชการ":
     st.header("🧭 บันทึกการไปราชการ (สำหรับหมู่คณะ)")
@@ -188,7 +198,6 @@ elif menu == "🧭 การไปราชการ":
         selected_names = st.multiselect("เลือกชื่อเจ้าหน้าที่ (เลือกได้หลายคน)", options=all_names, disabled=st.session_state.submitted)
         new_names_str = st.text_area("เพิ่มชื่อเจ้าหน้าที่ใหม่ (กรณีไม่มีในตัวเลือก)", placeholder="ใส่ 1 ชื่อต่อ 1 บรรทัด", disabled=st.session_state.submitted)
         
-        # ⭐ เพิ่มช่องแนบไฟล์
         uploaded_file = st.file_uploader("แนบไฟล์คำสั่ง/เอกสารอนุมัติ (PDF)", type="pdf", disabled=st.session_state.submitted)
         
         submitted_travel = st.form_submit_button("💾 บันทึกข้อมูล", on_click=callback_submit, disabled=st.session_state.submitted)
@@ -204,7 +213,6 @@ elif menu == "🧭 การไปราชการ":
             st.session_state.submitted = False
         else:
             with st.spinner('⏳ กำลังบันทึกและอัปโหลดไฟล์... กรุณารอสักครู่'):
-                # 1. จัดการไฟล์แนบ
                 attachment_folder_id = get_or_create_folder(ATTACHMENT_FOLDER_NAME, FOLDER_ID)
                 file_link = "-"
                 if uploaded_file:
@@ -215,7 +223,6 @@ elif menu == "🧭 การไปราชการ":
                     
                     file_link = upload_pdf_to_drive(uploaded_file, pdf_filename, attachment_folder_id)
 
-                # 2. สำรองข้อมูลและบันทึก
                 backup_excel(FILE_TRAVEL, df_travel)
                 new_records = []
                 timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -228,7 +235,7 @@ elif menu == "🧭 การไปราชการ":
                         "ชื่อ-สกุล": name, 
                         "จำนวนวัน": num_days, 
                         "ผู้ร่วมเดินทาง": fellow_travelers if fellow_travelers else "-", 
-                        "ลิงก์เอกสาร": file_link, # ⭐ เพิ่มลิงก์ลงใน record
+                        "ลิงก์เอกสาร": file_link,
                         "last_update": timestamp
                     }
                     new_records.append(record)
@@ -250,7 +257,6 @@ elif menu == "🧭 การไปราชการ":
                      })
     else:
         st.markdown("### 📋 ข้อมูลปัจจุบันทั้งหมด")
-        # ⭐ ทำให้ลิงก์ในตารางสามารถคลิกได้
         st.dataframe(df_travel.astype(str).sort_values('วันที่เริ่ม', ascending=False), 
                      column_config={
                          "ลิงก์เอกสาร": st.column_config.LinkColumn("เอกสารแนบ", display_text="🔗 เปิดไฟล์")
@@ -292,6 +298,7 @@ elif menu == "🕒 การลา":
                 st.success("✅ บันทึกข้อมูลการลาเรียบร้อยแล้ว!")
                 st.session_state.submitted = False
                 st.rerun()
+                
     st.markdown("---")
     st.markdown("### 🔍 ค้นหาข้อมูลรายบุคคล")
     search_name_leave = st.text_input("พิมพ์ชื่อ-สกุลเพื่อค้นหา (การลา)", "")
@@ -304,4 +311,4 @@ elif menu == "🕒 การลา":
 
 elif menu == "🧑‍💼 ผู้ดูแลระบบ":
     st.header("🔐 ผู้ดูแลระบบ")
-    # (โค้ดส่วน Admin เหมือนเดิม)
+    # (โค้ด Admin Panel)
