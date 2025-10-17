@@ -220,12 +220,84 @@ def read_scan_report(file_path):
         st.error(f"⚠️ อ่านไฟล์ scan_report.xlsx ไม่สำเร็จ: {e}")
         return pd.DataFrame()
 
-# ----------------------------
-# 📂 โหลดไฟล์หลัก
-# ----------------------------
-df_att = read_scan_report("scan_report.xlsx")
-df_leave = pd.read_excel("leave_report.xlsx") if "leave_report.xlsx" in locals() or "leave_report.xlsx" in globals() else pd.DataFrame()
-df_travel = pd.read_excel("travel_report.xlsx") if "travel_report.xlsx" in locals() or "travel_report.xlsx" in globals() else pd.DataFrame()
+# ====================================================
+# 📂 โหลดไฟล์หลัก (Smart Cache + ปุ่มรีเฟรช + เวลา Sync)
+# ====================================================
+
+import os
+import shutil
+import datetime as dt
+
+LOCAL_CACHE_DIR = "cached_files"
+os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
+
+# 🔁 ปุ่มรีเฟรชข้อมูลจาก Drive
+st.sidebar.markdown("---")
+if st.sidebar.button("🔁 รีเฟรชข้อมูลจาก Drive (อัปเดตล่าสุด)"):
+    try:
+        shutil.rmtree(LOCAL_CACHE_DIR)
+        os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
+        st.sidebar.success("✅ ล้าง cache เรียบร้อย กำลังโหลดข้อมูลใหม่...")
+        st.experimental_rerun()
+    except Exception as e:
+        st.sidebar.error(f"⚠️ ไม่สามารถล้าง cache ได้: {e}")
+
+# 🕒 ฟังก์ชันจัดการเวลาซิงก์ล่าสุด
+def update_sync_time():
+    sync_file = os.path.join(LOCAL_CACHE_DIR, "last_sync.txt")
+    with open(sync_file, "w", encoding="utf-8") as f:
+        f.write(dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+def get_sync_time():
+    sync_file = os.path.join(LOCAL_CACHE_DIR, "last_sync.txt")
+    if os.path.exists(sync_file):
+        with open(sync_file, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return "— ยังไม่เคยซิงก์ข้อมูล —"
+
+def load_excel_smart_cache(filename, from_drive=True):
+    """
+    โหลดไฟล์ Excel แบบอัจฉริยะ:
+    1️⃣ ถ้ามีไฟล์ใน cache local → ใช้เลย
+    2️⃣ ถ้าไม่มี → ดึงจาก Shared Drive
+    3️⃣ ถ้าดึงสำเร็จ → เก็บสำเนา local และอัปเดตเวลาซิงก์
+    """
+    local_path = os.path.join(LOCAL_CACHE_DIR, filename)
+
+    # ✅ 1. โหลดจาก cache ถ้ามี
+    if os.path.exists(local_path):
+        st.success(f"📄 โหลดไฟล์ {filename} จาก cache local สำเร็จ ✅")
+        return pd.read_excel(local_path)
+
+    # ✅ 2. โหลดจาก Drive ถ้าไม่มีใน local
+    elif from_drive:
+        st.info(f"🔄 ไม่พบไฟล์ {filename} ในเครื่อง — กำลังดึงจาก Shared Drive...")
+        df = read_excel_from_drive(filename)
+        if df.empty:
+            st.error(f"❌ ไม่พบไฟล์ {filename} ใน Shared Drive")
+            return pd.DataFrame()
+
+        # ✅ 3. เก็บสำเนา cache และอัปเดตเวลาซิงก์
+        try:
+            df.to_excel(local_path, index=False)
+            update_sync_time()
+            st.success(f"✅ โหลดไฟล์ {filename} จาก Shared Drive และเก็บ cache ไว้ใน '{LOCAL_CACHE_DIR}'")
+        except Exception as e:
+            st.warning(f"⚠️ โหลดสำเร็จแต่บันทึก cache ไม่ได้: {e}")
+        return df
+
+    # ❌ 4. ไม่พบทั้งสองที่
+    else:
+        st.error(f"❌ ไม่พบไฟล์ {filename} ทั้งใน local และ Shared Drive")
+        return pd.DataFrame()
+
+# ✅ โหลดข้อมูลทั้งสามชุด
+df_att = load_excel_smart_cache("scan_report.xlsx")
+df_leave = load_excel_smart_cache("leave_report.xlsx")
+df_travel = load_excel_smart_cache("travel_report.xlsx")
+
+# 🕒 แสดงเวลาซิงก์ล่าสุด
+st.sidebar.caption(f"🕒 ซิงก์ข้อมูลล่าสุด: {get_sync_time()}")
 
 # ----------------------------
 # เมนูหลัก
@@ -603,6 +675,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
