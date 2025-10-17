@@ -216,11 +216,28 @@ elif menu == "📅 การมาปฏิบัติงาน":
     df_att[name_col] = df_att[name_col].astype(str).str.strip()
     valid_names = sorted([n for n in df_att[name_col].unique() if n and n.lower() != "nan"])
 
-    # ✅ แปลงวันที่
+    # ✅ ตรวจสอบและแปลงวันที่อย่างยืดหยุ่น
     if "วันที่" not in df_att.columns:
         st.error("❌ ไม่พบคอลัมน์ 'วันที่' ในไฟล์ scan_report.xlsx")
         st.stop()
-    df_att["วันที่"] = pd.to_datetime(df_att["วันที่"], errors="coerce")
+
+    # แสดงข้อมูลตัวอย่างก่อนแปลง
+    st.write("🧩 ตัวอย่างข้อมูลวันที่ (ก่อนแปลง):", df_att["วันที่"].head(10).tolist())
+
+    # ฟังก์ชันแปลงวันที่แบบยืดหยุ่น รองรับทั้ง dd-mm-yyyy / yyyy-mm-dd / dd/mm/yyyy
+    def parse_date_flex(x):
+        for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return pd.to_datetime(x, format=fmt)
+            except Exception:
+                continue
+        return pd.NaT
+
+    df_att["วันที่"] = df_att["วันที่"].apply(parse_date_flex)
+
+    # แสดงผลตรวจสอบหลังแปลง
+    st.write("✅ ตรวจสอบวันที่หลังแปลง:", df_att["วันที่"].head(10))
+    st.write("📘 dtype วันที่:", df_att["วันที่"].dtype)
 
     # ✅ แปลงเวลาเข้าและเวลาออกให้เป็น datetime.time
     for col in ["เวลาเข้า", "เวลาออก"]:
@@ -566,6 +583,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
