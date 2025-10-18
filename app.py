@@ -1,6 +1,6 @@
 # ====================================================
 # 📋 โปรแกรมติดตามการลาและไปราชการ (สคร.9)
-# ✅ Final Version: Complete Code
+# ✅ Final Version: Complete Code - No Omissions
 # ====================================================
 
 import io
@@ -134,11 +134,15 @@ st.title("📋 ระบบติดตามการลา ไปราชก�
 if 'submitted' not in st.session_state: st.session_state.submitted = False
 def callback_submit(): st.session_state.submitted = True
 
+all_names_list = []
 name_col_att = next((col for col in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if col in df_att.columns), None)
-all_names_leave = set(df_leave['ชื่อ-สกุล'].dropna()) if not df_leave.empty and 'ชื่อ-สกุล' in df_leave.columns else set()
-all_names_travel = set(df_travel['ชื่อ-สกุล'].dropna()) if not df_travel.empty and 'ชื่อ-สกุล' in df_travel.columns else set()
-all_names_att = set(df_att[name_col_att].dropna()) if not df_att.empty and name_col_att else set()
-all_names = sorted(all_names_leave.union(all_names_travel).union(all_names_att))
+if not df_leave.empty and 'ชื่อ-สกุล' in df_leave.columns:
+    all_names_list.extend(df_leave['ชื่อ-สกุล'].dropna().tolist())
+if not df_travel.empty and 'ชื่อ-สกุล' in df_travel.columns:
+    all_names_list.extend(df_travel['ชื่อ-สกุล'].dropna().tolist())
+if not df_att.empty and name_col_att:
+    all_names_list.extend(df_att[name_col_att].dropna().tolist())
+all_names = sorted(list(set(all_names_list)))
 
 staff_groups = sorted(["กลุ่มโรคติดต่อ", "กลุ่มระบาดวิทยาฯ", "กลุ่มพัฒนาองค์กร", "กลุ่มบริหารทั่วไป", "กลุ่มโรคไม่ติดต่อ", "กลุ่มห้องปฏิบัติการฯ", "กลุ่มพัฒนานวัตกรรมฯ", "กลุ่มโรคติดต่อเรื้อรัง", "ศตม.9.1 ชัยภูมิ", "ศตม.9.2 บุรีรัมย์", "ศตม.9.3 สุรินทร์", "ศตม.9.4 ปากช่อง", "ด่านฯ ช่องจอม", "ศูนย์เวชศาสตร์ป้องกัน", "กลุ่มสื่อสารความเสี่ยง", "กลุ่มอาชีวสิ่งแวดล้อม"])
 leave_types = ["ลาป่วย", "ลากิจ", "ลาพักผ่อน", "อื่นๆ"]
@@ -388,7 +392,6 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         if st.button("💾 บันทึกข้อมูลการลา", key="save_leave"):
             with st.spinner("กำลังบันทึก..."):
                 backup_excel(FILE_LEAVE, df_leave)
-                # Convert back to original types before saving
                 df_to_save = pd.DataFrame(edited_leave)
                 df_to_save['last_update'] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
                 write_excel_to_drive(FILE_LEAVE, df_to_save)
