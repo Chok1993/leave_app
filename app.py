@@ -1,6 +1,6 @@
 # ====================================================
 # 📋 โปรแกรมติดตามการลาและไปราชการ (สคร.9)
-# ✅ Final Version: แก้ไข NameError และ TypeError
+# ✅ Final Version: Complete Code
 # ====================================================
 
 import io
@@ -388,8 +388,10 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         if st.button("💾 บันทึกข้อมูลการลา", key="save_leave"):
             with st.spinner("กำลังบันทึก..."):
                 backup_excel(FILE_LEAVE, df_leave)
-                edited_leave['last_update'] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-                write_excel_to_drive(FILE_LEAVE, pd.DataFrame(edited_leave))
+                # Convert back to original types before saving
+                df_to_save = pd.DataFrame(edited_leave)
+                df_to_save['last_update'] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+                write_excel_to_drive(FILE_LEAVE, df_to_save)
                 st.success("✅ บันทึกข้อมูลการลาเรียบร้อย")
                 st.rerun()
         
@@ -404,8 +406,9 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         if st.button("💾 บันทึกข้อมูลไปราชการ", key="save_travel"):
             with st.spinner("กำลังบันทึก..."):
                 backup_excel(FILE_TRAVEL, df_travel)
-                edited_travel['last_update'] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-                write_excel_to_drive(FILE_TRAVEL, pd.DataFrame(edited_travel))
+                df_to_save = pd.DataFrame(edited_travel)
+                df_to_save['last_update'] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+                write_excel_to_drive(FILE_TRAVEL, df_to_save)
                 st.success("✅ บันทึกข้อมูลไปราชการเรียบร้อย")
                 st.rerun()
         out_travel = io.BytesIO()
