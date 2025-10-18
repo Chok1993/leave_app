@@ -31,7 +31,7 @@ ADMIN_PASSWORD = st.secrets.get("admin_password", "admin123")
 # ===========================
 FOLDER_ID = "1YFJZvs59ahRHmlRrKcQwepWJz6A-4B7d"
 ATTACHMENT_FOLDER_NAME = "เอกสารแนบ_ไปราชการ"
-FILE_ATTEND = "attendance_report" # ชื่อไฟล์ข้อมูลสแกน
+FILE_ATTEND = "attendance_report.xlsx" # ชื่อไฟล์ข้อมูลสแกน
 FILE_LEAVE  = "leave_report.xlsx"
 FILE_TRAVEL = "travel_report.xlsx"
 
@@ -449,5 +449,6 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
