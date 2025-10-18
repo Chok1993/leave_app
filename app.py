@@ -117,41 +117,40 @@ def count_weekdays(start_date, end_date):
         return np.busday_count(start_date, end_date + dt.timedelta(days=1))
     return 0
 
-# ===========================
+# ====================================================
 # 📥 Load & Normalize Data
-# ===========================
+# ====================================================
 df_att = read_excel_from_drive(FILE_ATTEND)
 df_leave = read_excel_from_drive(FILE_LEAVE)
 df_travel = read_excel_from_drive(FILE_TRAVEL)
+
+# ====================================================
+# ✅ ตรวจสอบ DataFrame ป้องกัน NoneType Error
+# ====================================================
+df_leave = df_leave if isinstance(df_leave, pd.DataFrame) else pd.DataFrame()
+df_travel = df_travel if isinstance(df_travel, pd.DataFrame) else pd.DataFrame()
+df_att = df_att if isinstance(df_att, pd.DataFrame) else pd.DataFrame()
+
+# ====================================================
+# 🔎 หา column ชื่อบุคลากรในแต่ละไฟล์
+# ====================================================
+name_col_att = next((col for col in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if col in df_att.columns), None)
+
+# ====================================================
+# 🧩 รวมชุดชื่อจากทุกไฟล์อย่างปลอดภัย
+# ====================================================
+all_names_leave = set(df_leave["ชื่อ-สกุล"].dropna()) if "ชื่อ-สกุล" in df_leave.columns else set()
+all_names_travel = set(df_travel["ชื่อ-สกุล"].dropna()) if "ชื่อ-สกุล" in df_travel.columns else set()
+all_names_att = set(df_att[name_col_att].dropna()) if name_col_att else set()
+
+# ✅ รวมชื่อทั้งหมด (ปลอดภัยต่อทุกกรณี)
+all_names = sorted(set().union(all_names_leave, all_names_travel, all_names_att))
 
 # ====================================================
 # 🎯 UI Constants & Main App
 # ====================================================
 st.markdown("##### **สำนักงานป้องกันควบคุมโรคที่ 9 จังหวัดนครราชสีมา**")
 st.title("📋 ระบบติดตามการลา ไปราชการ และการปฏิบัติงาน")
-
-if 'submitted' not in st.session_state: st.session_state.submitted = False
-def callback_submit(): st.session_state.submitted = True
-
-# ✅ ตรวจสอบว่า DataFrame ทั้งสามถูกต้อง ป้องกัน NoneType Error
-df_leave = df_leave if isinstance(df_leave, pd.DataFrame) else pd.DataFrame()
-df_travel = df_travel if isinstance(df_travel, pd.DataFrame) else pd.DataFrame()
-df_att = df_att if isinstance(df_att, pd.DataFrame) else pd.DataFrame()
-
-# ✅ หา column ชื่อบุคลากรในแต่ละไฟล์ (รองรับหลายรูปแบบ)
-name_col_att = next((col for col in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if col in df_att.columns), None)
-
-# ✅ สร้างชุดชื่ออย่างปลอดภัย (กัน error union)
-all_names_leave = set(df_leave["ชื่อ-สกุล"].dropna()) if "ชื่อ-สกุล" in df_leave.columns else set()
-all_names_travel = set(df_travel["ชื่อ-สกุล"].dropna()) if "ชื่อ-สกุล" in df_travel.columns else set()
-all_names_att = set(df_att[name_col_att].dropna()) if name_col_att else set()
-
-# ✅ รวมชื่อทั้งหมดอย่างปลอดภัย
-all_names = sorted(set().union(all_names_leave, all_names_travel, all_names_att))
-
-
-staff_groups = sorted(["กลุ่มโรคติดต่อ", "กลุ่มระบาดวิทยาฯ", "กลุ่มพัฒนาองค์กร", "กลุ่มบริหารทั่วไป", "กลุ่มโรคไม่ติดต่อ", "กลุ่มห้องปฏิบัติการฯ", "กลุ่มพัฒนานวัตกรรมฯ", "กลุ่มโรคติดต่อเรื้อรัง", "ศตม.9.1 ชัยภูมิ", "ศตม.9.2 บุรีรัมย์", "ศตม.9.3 สุรินทร์", "ศตม.9.4 ปากช่อง", "ด่านฯ ช่องจอม", "ศูนย์เวชศาสตร์ป้องกัน", "กลุ่มสื่อสารความเสี่ยง", "กลุ่มอาชีวสิ่งแวดล้อม"])
-leave_types = ["ลาป่วย", "ลากิจ", "ลาพักผ่อน", "อื่นๆ"]
 
 menu = st.sidebar.radio("เลือกเมนู", ["หน้าหลัก", "📊 Dashboard", "📅 การมาปฏิบัติงาน", "🧭 การไปราชการ", "🕒 การลา", "🧑‍💼 ผู้ดูแลระบบ"])
 
@@ -460,6 +459,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
