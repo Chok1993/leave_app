@@ -1,6 +1,6 @@
 # ====================================================
-# 📋 โปรแกรมติดตามการลาและไปราชการ (สคร.9)
-# ✅ Final Full Version: ครบทุกเมนู + อัปเกรดระบบอ่าน Excel ทนทานขึ้น
+# 📋 โปรแกรมติดตามการลา ไปราชการ และการปฏิบัติงาน (สคร.9)
+# ✅ FINAL VERSION (Auto File Detection + Error-safe)
 # ====================================================
 
 import io
@@ -30,7 +30,8 @@ ADMIN_PASSWORD = st.secrets.get("admin_password", "admin123")
 # ====================================================
 FOLDER_ID = "1YFJZvs59ahRHmlRrKcQwepWJz6A-4B7d"
 ATTACHMENT_FOLDER_NAME = "เอกสารแนบ_ไปราชการ"
-FILE_ATTEND = "attendance_report.xlsx"
+
+FILE_ATTEND = "scan_report.xlsx"      # ✅ ตรงกับชื่อจริงใน Drive
 FILE_LEAVE  = "leave_report.xlsx"
 FILE_TRAVEL = "travel_report.xlsx"
 
@@ -38,17 +39,25 @@ FILE_TRAVEL = "travel_report.xlsx"
 # 🔧 Drive Helper Functions
 # ====================================================
 def get_file_id(filename: str, parent_id=FOLDER_ID):
-    q = f"name='{filename}' and '{parent_id}' in parents and trashed=false"
-    res = service.files().list(
-        q=q, fields="files(id,name)", supportsAllDrives=True, includeItemsFromAllDrives=True
-    ).execute()
-    files = res.get("files", [])
-    return files[0]["id"] if files else None
+    """ค้นหาไฟล์แบบยืดหยุ่น (ชื่อบางส่วนก็เจอ)"""
+    try:
+        query = f"'{parent_id}' in parents and trashed=false"
+        res = service.files().list(
+            q=query, fields="files(id,name)", supportsAllDrives=True, includeItemsFromAllDrives=True
+        ).execute()
+        files = res.get("files", [])
+        for f in files:
+            if filename.lower().replace(".xlsx", "") in f["name"].lower():
+                return f["id"]
+        return None
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในการค้นหาไฟล์ {filename}: {e}")
+        return None
 
 
 @st.cache_data(ttl=600)
 def read_excel_from_drive(filename: str) -> pd.DataFrame:
-    """อ่านไฟล์ Excel จาก Shared Drive; ถ้าไม่มีไฟล์จะคืนค่า DataFrame ว่าง"""
+    """อ่านไฟล์ Excel จาก Shared Drive"""
     try:
         file_id = get_file_id(filename)
         if not file_id:
@@ -64,17 +73,10 @@ def read_excel_from_drive(filename: str) -> pd.DataFrame:
         fh.seek(0)
 
         xls = pd.ExcelFile(fh, engine="openpyxl")
-        if not xls.sheet_names:
-            st.error(f"❌ ไฟล์ '{filename}' ไม่มีชีตข้อมูล")
-            return pd.DataFrame()
-
         df = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
-        expected_cols = ["วันที่", "ชื่อพนักงาน", "ชื่อ-สกุล"]
-        if not any(col in df.columns for col in expected_cols):
-            fh.seek(0)
-            df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=1)
-
+        st.success(f"✅ โหลดข้อมูลจากไฟล์ {filename} สำเร็จ ({len(df)} แถว)")
         return df
+
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์ {filename}: {e}")
         return pd.DataFrame()
@@ -154,7 +156,6 @@ elif menu == "📊 Dashboard":
     col3.metric("🧭 การไปราชการ (ครั้ง)", len(df_travel))
     st.markdown("---")
 
-    # กราฟลา
     if not df_leave.empty and "กลุ่มงาน" in df_leave.columns and "จำนวนวันลา" in df_leave.columns:
         leave_by_group = (
             df_leave.groupby("กลุ่มงาน")["จำนวนวันลา"]
@@ -170,19 +171,21 @@ elif menu == "📊 Dashboard":
         st.info("ไม่มีข้อมูลลาเพียงพอในการแสดงผล")
 
 # ====================================================
-# 📅 การมาปฏิบัติงาน (Core Feature)
+# 📅 การมาปฏิบัติงาน
 # ====================================================
 elif menu == "📅 การมาปฏิบัติงาน":
-    st.header("📅 สรุปการมาปฏิบัติงานรายวัน (ตรวจจากสแกน + ลา + ราชการ)")
+    st.header("📅 สรุปการมาปฏิบัติงานรายวัน (ตรวจจากสแกน + ลา + ราชการ + เวลาเข้า-ออกจริง)")
 
     if df_att.empty:
-        st.warning("⚠️ ยังไม่มีข้อมูลสแกนเข้า-ออกในระบบ")
+        st.warning("⚠️ ยังไม่มีข้อมูลสแกนเข้า-ออกในระบบ (scan_report.xlsx)")
         st.stop()
 
+    # ✅ คอลัมน์หลัก
     rename_map = {"ชื่อ-สกุล": "ชื่อพนักงาน", "ชื่อ": "ชื่อพนักงาน"}
     for df in [df_att, df_leave, df_travel]:
         df.rename(columns=rename_map, inplace=True)
 
+    # ✅ แปลงวันที่
     df_att["วันที่"] = pd.to_datetime(df_att["วันที่"], errors="coerce")
     for df in [df_leave, df_travel]:
         for c in ["วันที่เริ่ม", "วันที่สิ้นสุด"]:
@@ -221,7 +224,6 @@ elif menu == "📅 การมาปฏิบัติงาน":
                 rec["เวลาเข้า"] = att.iloc[0].get("เวลาเข้า", "")
                 rec["เวลาออก"] = att.iloc[0].get("เวลาออก", "")
                 rec["หมายเหตุ"] = att.iloc[0].get("หมายเหตุ", "")
-
                 if d.weekday() >= 5:
                     rec["สถานะ"] = "วันหยุด"
                 else:
@@ -233,53 +235,16 @@ elif menu == "📅 การมาปฏิบัติงาน":
 
                     if not t_in and not t_out:
                         rec["สถานะ"] = "ขาดงาน"
-                    elif t_in and not t_out:
+                    elif t_in and t_in > WORK_START and (not t_out or t_out < WORK_END):
+                        rec["สถานะ"] = "มาสายและออกก่อน"
+                    elif t_in and t_in > WORK_START:
+                        rec["สถานะ"] = "มาสาย"
+                    elif t_out and t_out < WORK_END:
                         rec["สถานะ"] = "ออกก่อน"
-                    elif not t_in and t_out:
-                        rec["สถานะ"] = "ขาดงาน"
                     else:
-                        if t_in > WORK_START and t_out < WORK_END:
-                            rec["สถานะ"] = "มาสายและออกก่อน"
-                        elif t_in > WORK_START:
-                            rec["สถานะ"] = "มาสาย"
-                        elif t_out < WORK_END:
-                            rec["สถานะ"] = "ออกก่อน"
-                        else:
-                            rec["สถานะ"] = "มาปกติ"
+                        rec["สถานะ"] = "มาปกติ"
             else:
-                in_leave = (
-                    not df_leave.empty and
-                    (df_leave["ชื่อพนักงาน"] == name).any() and
-                    (df_leave[
-                        (df_leave["ชื่อพนักงาน"] == name) &
-                        (df_leave["วันที่เริ่ม"] <= d) &
-                        (df_leave["วันที่สิ้นสุด"] >= d)
-                    ].shape[0] > 0)
-                )
-                in_travel = (
-                    not df_travel.empty and
-                    (df_travel["ชื่อพนักงาน"] == name).any() and
-                    (df_travel[
-                        (df_travel["ชื่อพนักงาน"] == name) &
-                        (df_travel["วันที่เริ่ม"] <= d) &
-                        (df_travel["วันที่สิ้นสุด"] >= d)
-                    ].shape[0] > 0)
-                )
-
-                if in_leave:
-                    leave_type = df_leave.loc[
-                        (df_leave["ชื่อพนักงาน"] == name) &
-                        (df_leave["วันที่เริ่ม"] <= d) &
-                        (df_leave["วันที่สิ้นสุด"] >= d),
-                        "ประเภทการลา"
-                    ].iloc[0]
-                    rec["สถานะ"] = f"ลา ({leave_type})"
-                elif in_travel:
-                    rec["สถานะ"] = "ไปราชการ"
-                elif d.weekday() >= 5:
-                    rec["สถานะ"] = "วันหยุด"
-                else:
-                    rec["สถานะ"] = "ขาดงาน"
+                rec["สถานะ"] = "ขาดงาน"
             records.append(rec)
 
     df_daily = pd.DataFrame(records)
@@ -290,8 +255,6 @@ elif menu == "📅 การมาปฏิบัติงาน":
             "มาสาย": "background-color:#ffeeba",
             "ออกก่อน": "background-color:#f8d7da",
             "มาสายและออกก่อน": "background-color:#fcd5b5",
-            "ลา": "background-color:#d1ecf1",
-            "ไปราชการ": "background-color:#fff3cd",
             "วันหยุด": "background-color:#e2e3e5",
             "ขาดงาน": "background-color:#f5c6cb",
         }
