@@ -10,6 +10,7 @@ import datetime as dt
 import pandas as pd
 import numpy as np
 import streamlit as st
+import re # ## ---> ADDED THIS
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -34,6 +35,9 @@ FOLDER_ID = "1YFJZvs59ahRHmlRrKcQwepWJz6A-4B7d"  # Leave_App_Data
 FILE_ATTEND = "attendance_report.xlsx"
 FILE_LEAVE  = "leave_report.xlsx"
 FILE_TRAVEL = "travel_report.xlsx"
+## ---> START: ADDED THIS SECTION
+ATTACHMENT_FOLDER_NAME = "Attachments_Leave_App" # ชื่อโฟลเดอร์สำหรับเก็บไฟล์แนบ
+## ---> END: ADDED THIS SECTION
 
 # ===========================
 # 🔧 Helper Functions
@@ -97,6 +101,94 @@ def read_excel_from_drive(filename: str) -> pd.DataFrame:
         st.error(f"❌ อ่านไฟล์ {filename} ไม่สำเร็จ: {e}")
         return pd.DataFrame()
 
+## ---> START: ADDED THIS SECTION
+def count_weekdays(start_date, end_date):
+    """นับจำนวนวันทำการ (จันทร์-ศุกร์) ระหว่าง 2 วันที่"""
+    if start_date is None or end_date is None:
+        return 0
+    if isinstance(start_date, dt.datetime):
+        start_date = start_date.date()
+    if isinstance(end_date, dt.datetime):
+        end_date = end_date.date()
+    return np.busday_count(start_date, end_date + dt.timedelta(days=1))
+
+def write_excel_to_drive(filename: str, df: pd.DataFrame):
+    """เขียน DataFrame ลงในไฟล์ Excel บน Google Drive (เขียนทับไฟล์เดิม)"""
+    try:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            df.to_excel(writer, index=False, sheet_name="Data")
+        output.seek(0)
+
+        file_id = get_file_id(filename)
+        media = MediaIoBaseUpload(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        if file_id:
+            service.files().update(
+                fileId=file_id,
+                media_body=media,
+                supportsAllDrives=True
+            ).execute()
+        else: # ถ้าไฟล์ไม่มีอยู่ ให้สร้างใหม่
+            file_metadata = {
+                "name": filename,
+                "parents": [FOLDER_ID]
+            }
+            service.files().create(
+                body=file_metadata,
+                media_body=media,
+                supportsAllDrives=True,
+                fields="id"
+            ).execute()
+        st.cache_data.clear() # ล้าง cache ทุกครั้งหลังเขียนไฟล์
+    except Exception as e:
+        st.error(f"❌ บันทึกไฟล์ {filename} ไม่สำเร็จ: {e}")
+
+def backup_excel(filename: str, current_df: pd.DataFrame):
+    """สร้างไฟล์สำรอง (backup) ก่อนที่จะเขียนทับ"""
+    if current_df.empty: return
+    try:
+        file_id = get_file_id(filename)
+        if file_id:
+            timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_name = f"BAK_{timestamp}_{filename}"
+            service.files().copy(
+                fileId=file_id,
+                body={"name": backup_name, "parents": [FOLDER_ID]},
+                supportsAllDrives=True
+            ).execute()
+    except Exception as e:
+        st.warning(f"⚠️ ไม่สามารถสร้างไฟล์สำรองได้: {e}")
+
+def get_or_create_folder(folder_name: str, parent_id: str):
+    """ค้นหาโฟลเดอร์ ถ้าไม่เจอก็สร้างใหม่"""
+    q = f"name='{folder_name}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    res = service.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+    folder = res.get("files", [])
+    if folder:
+        return folder[0]["id"]
+    else:
+        file_metadata = {'name': folder_name, 'parents': [parent_id], 'mimeType': 'application/vnd.google-apps.folder'}
+        new_folder = service.files().create(body=file_metadata, supportsAllDrives=True, fields='id').execute()
+        return new_folder.get('id')
+
+def upload_pdf_to_drive(uploaded_file, new_filename, folder_id):
+    """อัปโหลดไฟล์ PDF ไปยัง Drive และคืนค่าเป็น Link"""
+    try:
+        file_metadata = {'name': new_filename, 'parents': [folder_id]}
+        media = MediaIoBaseUpload(io.BytesIO(uploaded_file.getvalue()), mimetype='application/pdf', resumable=True)
+        created_file = service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True, fields='id, webViewLink').execute()
+
+        file_id = created_file.get('id')
+        permission = {'type': 'anyone', 'role': 'reader'}
+        service.permissions().create(fileId=file_id, body=permission, supportsAllDrives=True).execute()
+
+        return created_file.get('webViewLink')
+    except Exception as e:
+        st.error(f"❌ อัปโหลดไฟล์ไม่สำเร็จ: {e}")
+        return "-"
+## ---> END: ADDED THIS SECTION
+
 # ====================================================
 # 📥 Load Data
 # ====================================================
@@ -119,6 +211,18 @@ all_names_att = set(df_att[name_col_att].dropna()) if name_col_att else set()
 
 # ✅ แปลงทุกค่าก่อนเรียงลำดับ เพื่อป้องกัน TypeError ('<' not supported between str and int)
 all_names = sorted(map(str, set().union(all_names_leave, all_names_travel, all_names_att)))
+
+## ---> START: ADDED THIS SECTION
+# ====================================================
+# ⚙️ ค่าตั้งต้น & Lists
+# ====================================================
+staff_groups = [
+    "กลุ่มอำนวยการ", "กลุ่มยุทธศาสตร์และแผนงาน", "กลุ่มระบาดวิทยา",
+    "กลุ่มโรคติดต่อ", "กลุ่มโรคไม่ติดต่อ", "กลุ่มวัณโรค", "กลุ่มโรคเอดส์", "กลุ่มโรคจากการประกอบอาชีพและสิ่งแวดล้อม",
+    "กลุ่มพัฒนาองค์กร", "อื่นๆ"
+]
+leave_types = ["ลาป่วย", "ลากิจส่วนตัว", "ลาพักผ่อน", "ลาคลอดบุตร", "ลาอุปสมบท"]
+## ---> END: ADDED THIS SECTION
 
 # ====================================================
 # 🧭 Interface
@@ -457,12 +561,3 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
-
-
-
-
-
-
-
-
-
