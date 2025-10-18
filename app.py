@@ -110,13 +110,15 @@ df_leave = df_leave if isinstance(df_leave, pd.DataFrame) else pd.DataFrame()
 df_travel = df_travel if isinstance(df_travel, pd.DataFrame) else pd.DataFrame()
 
 # ====================================================
-# 👥 รวมรายชื่อบุคลากร
+# 👥 รวมรายชื่อบุคลากร (แก้ไข TypeError)
 # ====================================================
 name_col_att = next((col for col in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if col in df_att.columns), None)
 all_names_leave = set(df_leave["ชื่อ-สกุล"].dropna()) if "ชื่อ-สกุล" in df_leave.columns else set()
 all_names_travel = set(df_travel["ชื่อ-สกุล"].dropna()) if "ชื่อ-สกุล" in df_travel.columns else set()
 all_names_att = set(df_att[name_col_att].dropna()) if name_col_att else set()
-all_names = sorted(set().union(all_names_leave, all_names_travel, all_names_att))
+
+# ✅ แปลงทุกค่าก่อนเรียงลำดับ เพื่อป้องกัน TypeError ('<' not supported between str and int)
+all_names = sorted(map(str, set().union(all_names_leave, all_names_travel, all_names_att)))
 
 # ====================================================
 # 🧭 Interface
@@ -126,11 +128,17 @@ st.title("📋 ระบบติดตามการลา ไปราชก�
 
 menu = st.sidebar.radio("เลือกเมนู", ["หน้าหลัก", "📊 Dashboard", "📅 การมาปฏิบัติงาน", "🧭 การไปราชการ", "🕒 การลา", "🧑‍💼 ผู้ดูแลระบบ"])
 
+# ===========================
+# 🏠 หน้าหลัก
+# ===========================
 if menu == "หน้าหลัก":
     st.info("💡 ระบบนี้ใช้สำหรับบันทึกและสรุปข้อมูลบุคลากรใน สคร.9\n"
             "ได้แก่ การลา การไปราชการ และการมาปฏิบัติงาน พร้อมแนบไฟล์เอกสาร PDF ได้โดยตรง")
     st.image("https://ddc.moph.go.th/uploads/files/11120210817094038.jpg", caption="สำนักงานป้องกันควบคุมโรคที่ 9 นครราชสีมา", use_container_width=True)
 
+# ===========================
+# 📊 Dashboard
+# ===========================
 elif menu == "📊 Dashboard":
     st.header("📊 Dashboard ภาพรวมและข้อมูลเชิงลึก")
     st.markdown("#### **ภาพรวมสะสม**")
@@ -139,19 +147,32 @@ elif menu == "📊 Dashboard":
     col2.metric("การลา (ครั้ง)", len(df_leave))
     col3.metric("ข้อมูลสแกน (แถว)", len(df_att))
     st.markdown("---")
+
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
         st.markdown("##### **การลาแยกตามกลุ่มงาน**")
         if not df_leave.empty and 'กลุ่มงาน' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
             leave_by_group = df_leave.groupby('กลุ่มงาน')['จำนวนวันลา'].sum().sort_values(ascending=False).reset_index()
-            st.altair_chart(alt.Chart(leave_by_group).mark_bar().encode(x=alt.X('จำนวนวันลา:Q', title='รวมวันลา'), y=alt.Y('กลุ่มงาน:N', sort='-x', title='กลุ่มงาน'), tooltip=['กลุ่มงาน', 'จำนวนวันลา']).properties(height=300), use_container_width=True)
+            st.altair_chart(alt.Chart(leave_by_group).mark_bar().encode(
+                x=alt.X('จำนวนวันลา:Q', title='รวมวันลา'),
+                y=alt.Y('กลุ่มงาน:N', sort='-x', title='กลุ่มงาน'),
+                tooltip=['กลุ่มงาน', 'จำนวนวันลา']
+            ).properties(height=300), use_container_width=True)
+
     with col_chart2:
         st.markdown("##### **ผู้เดินทางราชการบ่อยที่สุด (Top 5)**")
         if not df_travel.empty and 'ชื่อ-สกุล' in df_travel.columns:
             top_travelers = df_travel['ชื่อ-สกุล'].value_counts().nlargest(5).reset_index()
             top_travelers.columns = ['ชื่อ-สกุล', 'จำนวนครั้ง']
-            st.altair_chart(alt.Chart(top_travelers).mark_bar(color='#ff8c00').encode(x=alt.X('จำนวนครั้ง:Q', title='จำนวนครั้ง'), y=alt.Y('ชื่อ-สกุล:N', sort='-x', title='ชื่อ-สกุล'), tooltip=['ชื่อ-สกุล', 'จำนวนครั้ง']).properties(height=300), use_container_width=True)
+            st.altair_chart(alt.Chart(top_travelers).mark_bar(color='#ff8c00').encode(
+                x=alt.X('จำนวนครั้ง:Q', title='จำนวนครั้ง'),
+                y=alt.Y('ชื่อ-สกุล:N', sort='-x', title='ชื่อ-สกุล'),
+                tooltip=['ชื่อ-สกุล', 'จำนวนครั้ง']
+            ).properties(height=300), use_container_width=True)
 
+# ===========================
+# 📅 การมาปฏิบัติงาน
+# ===========================
 elif menu == "📅 การมาปฏิบัติงาน":
     st.header("📅 สรุปการมาปฏิบัติงานรายวัน (ตรวจจากสแกน + ลา + ราชการ)")
 
@@ -160,11 +181,7 @@ elif menu == "📅 การมาปฏิบัติงาน":
         st.stop()
 
     # ✅ ตรวจสอบชื่อคอลัมน์บุคลากร
-    name_col = None
-    for possible in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"]:
-        if possible in df_att.columns:
-            name_col = possible
-            break
+    name_col = next((c for c in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if c in df_att.columns), None)
     if not name_col:
         st.error("⚠️ ไม่พบคอลัมน์ชื่อบุคลากร (เช่น 'ชื่อพนักงาน' หรือ 'ชื่อ-สกุล')")
         st.stop()
@@ -180,36 +197,26 @@ elif menu == "📅 การมาปฏิบัติงาน":
     df_att["เดือน"] = df_att["วันที่"].dt.strftime("%Y-%m")
     months = sorted(df_att["เดือน"].dropna().unique())
     selected_month = st.selectbox("เลือกเดือนที่ต้องการดู", months, index=len(months)-1)
-    
-    # ใช้ all_names ที่สร้างไว้แล้วเพื่อให้ครอบคลุมทุกคน
-    selected_names = st.multiselect("เลือกชื่อบุคลากร (ว่าง=ทุกคน)", all_names)
 
+    selected_names = st.multiselect("เลือกชื่อบุคลากร (ว่าง=ทุกคน)", all_names)
     df_month = df_att[df_att["เดือน"] == selected_month].copy()
-    
-    # ✅ กำหนดช่วงเวลาทำงานราชการ
+
     WORK_START = dt.time(8, 30)
     WORK_END = dt.time(16, 30)
-
-    # ✅ สร้างช่วงวันที่ทั้งเดือน
     month_start = pd.to_datetime(selected_month + "-01").date()
     month_end = (month_start + pd.offsets.MonthEnd(0)).date()
     date_range = pd.date_range(month_start, month_end, freq="D")
-    
-    # -----------------------------
-    # 🔍 ตรวจสอบแต่ละวัน
-    # -----------------------------
+
     records = []
     names_to_process = selected_names if selected_names else all_names
-    
+
     for name in names_to_process:
         for d in date_range:
-            rec = { "ชื่อพนักงาน": name, "วันที่": d.date(), "เวลาเข้า": "", "เวลาออก": "", "หมายเหตุ": "", "สถานะ": "" }
-            
+            rec = {"ชื่อพนักงาน": name, "วันที่": d.date(), "เวลาเข้า": "", "เวลาออก": "", "หมายเหตุ": "", "สถานะ": ""}
+
             att = df_month[(df_month[name_col] == name) & (df_month["วันที่"].dt.date == d.date())]
-            
-            # ตรวจสอบสถานะจาก ลา และ ไปราชการก่อน
-            in_leave = not df_leave.empty and (df_leave[ (df_leave["ชื่อ-สกุล"] == name) & (df_leave["วันที่เริ่ม"] <= d) & (df_leave["วันที่สิ้นสุด"] >= d) ].shape[0] > 0)
-            in_travel = not df_travel.empty and (df_travel[ (df_travel["ชื่อ-สกุล"] == name) & (df_travel["วันที่เริ่ม"] <= d) & (df_travel["วันที่สิ้นสุด"] >= d) ].shape[0] > 0)
+            in_leave = not df_leave.empty and (df_leave[(df_leave["ชื่อ-สกุล"] == name) & (df_leave["วันที่เริ่ม"] <= d) & (df_leave["วันที่สิ้นสุด"] >= d)].shape[0] > 0)
+            in_travel = not df_travel.empty and (df_travel[(df_travel["ชื่อ-สกุล"] == name) & (df_travel["วันที่เริ่ม"] <= d) & (df_travel["วันที่สิ้นสุด"] >= d)].shape[0] > 0)
 
             if in_leave:
                 leave_type = df_leave.loc[(df_leave["ชื่อ-สกุล"] == name) & (df_leave["วันที่เริ่ม"] <= d) & (df_leave["วันที่สิ้นสุด"] >= d), "ประเภทการลา"].iloc[0]
@@ -221,17 +228,24 @@ elif menu == "📅 การมาปฏิบัติงาน":
                 rec["เวลาเข้า"] = row.get("เวลาเข้า", "")
                 rec["เวลาออก"] = row.get("เวลาออก", "")
                 rec["หมายเหตุ"] = row.get("หมายเหตุ", "")
-                if d.weekday() >= 5: rec["สถานะ"] = "วันหยุด"
+                if d.weekday() >= 5:
+                    rec["สถานะ"] = "วันหยุด"
                 else:
                     try:
                         t_in = pd.to_datetime(str(rec["เวลาเข้า"])).time() if rec["เวลาเข้า"] else None
                         t_out = pd.to_datetime(str(rec["เวลาออก"])).time() if rec["เวลาออก"] else None
-                    except Exception: t_in, t_out = None, None
-                    if not t_in and not t_out: rec["สถานะ"] = "ขาดงาน"
-                    elif t_in > WORK_START and (not t_out or t_out < WORK_END): rec["สถานะ"] = "มาสายและออกก่อน"
-                    elif t_in > WORK_START: rec["สถานะ"] = "มาสาย"
-                    elif not t_out or t_out < WORK_END: rec["สถานะ"] = "ออกก่อน"
-                    else: rec["สถานะ"] = "มาปกติ"
+                    except Exception:
+                        t_in, t_out = None, None
+                    if not t_in and not t_out:
+                        rec["สถานะ"] = "ขาดงาน"
+                    elif t_in > WORK_START and (not t_out or t_out < WORK_END):
+                        rec["สถานะ"] = "มาสายและออกก่อน"
+                    elif t_in > WORK_START:
+                        rec["สถานะ"] = "มาสาย"
+                    elif not t_out or t_out < WORK_END:
+                        rec["สถานะ"] = "ออกก่อน"
+                    else:
+                        rec["สถานะ"] = "มาปกติ"
             else:
                 rec["สถานะ"] = "วันหยุด" if d.weekday() >= 5 else "ขาดงาน"
             records.append(rec)
@@ -240,33 +254,35 @@ elif menu == "📅 การมาปฏิบัติงาน":
     if not df_daily.empty:
         df_daily = df_daily.sort_values(["ชื่อพนักงาน", "วันที่"])
 
-    # -----------------------------
-    # 🎨 แสดงผลพร้อมสี
-    # -----------------------------
     def color_status(val):
-        colors = {"มาปกติ": "background-color:#d4edda", "มาสาย": "background-color:#ffeeba", "ออกก่อน": "background-color:#f8d7da", "มาสายและออกก่อน": "background-color:#fcd5b5", "ลา": "background-color:#d1ecf1", "ไปราชการ": "background-color:#fff3cd", "วันหยุด": "background-color:#e2e3e5", "ขาดงาน": "background-color:#f5c6cb"}
+        colors = {
+            "มาปกติ": "background-color:#d4edda",
+            "มาสาย": "background-color:#ffeeba",
+            "ออกก่อน": "background-color:#f8d7da",
+            "มาสายและออกก่อน": "background-color:#fcd5b5",
+            "ลา": "background-color:#d1ecf1",
+            "ไปราชการ": "background-color:#fff3cd",
+            "วันหยุด": "background-color:#e2e3e5",
+            "ขาดงาน": "background-color:#f5c6cb"
+        }
         for key in colors:
-            if key in str(val): return colors[key]
+            if key in str(val):
+                return colors[key]
         return ""
 
     st.markdown("### 📋 ตารางสรุปสถานะรายวัน")
     st.dataframe(df_daily.style.applymap(color_status, subset=["สถานะ"]), use_container_width=True, height=600)
 
-    # -----------------------------
-    # 📊 สรุปสถิติ
-    # -----------------------------
     st.markdown("---")
     st.subheader("📊 สรุปสถิติรวมต่อเดือนต่อคน")
-    
+
     def simplify_status(s):
         return "ลา" if isinstance(s, str) and s.startswith("ลา") else s
     df_daily["สถานะย่อ"] = df_daily["สถานะ"].apply(simplify_status)
-    
-    summary = df_daily.pivot_table(index="ชื่อพนักงาน", columns="สถานะย่อ", aggfunc='size', fill_value=0).reset_index()
-    
+
+    summary = df_daily.pivot_table(index="ชื่อพนักงาน", columns="สถานะย่อ", aggfunc="size", fill_value=0).reset_index()
     st.dataframe(summary, use_container_width=True)
 
-    # 📤 ดาวน์โหลด
     excel_output = io.BytesIO()
     with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
         df_daily.to_excel(writer, index=False, sheet_name="รายวัน")
@@ -431,6 +447,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
