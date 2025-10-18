@@ -290,166 +290,105 @@ elif menu == "📅 การมาปฏิบัติงาน":
     excel_output.seek(0)
     st.download_button("📥 ดาวน์โหลดรายงานสรุป (รายวัน + รวมต่อเดือน)", data=excel_output, file_name=f"รายงานสรุป_{selected_month}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# -----------------------------
-# 🧭 การไปราชการ (หมู่คณะ)
-# -----------------------------
+# ----------------------------
+# 🧭 การไปราชการ
+# ----------------------------
 elif menu == "🧭 การไปราชการ":
-    st.header("🧭 บันทึกการไปราชการ (สำหรับหมู่คณะ)")
-
-    # ========== ค่าคงที่ระบบ ==========
-    ATTACHMENT_FOLDER_NAME = "Travel_Attachments"
-
-    # ========== ฟังก์ชันย่อย ==========
-    def get_or_create_folder(folder_name, parent_id):
-        """สร้างหรือหาโฟลเดอร์สำหรับแนบไฟล์"""
-        query = f"name='{folder_name}' and '{parent_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'"
-        res = service.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-        files = res.get("files", [])
-        if files:
-            return files[0]["id"]
-        metadata = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder", "parents": [parent_id]}
-        f = service.files().create(body=metadata, fields="id", supportsAllDrives=True).execute()
-        return f["id"]
-
-    def upload_pdf_to_drive(uploaded_file, filename, folder_id):
-        """อัปโหลดไฟล์ PDF ไปยัง Google Drive"""
-        media = MediaIoBaseUpload(uploaded_file, mimetype="application/pdf")
-        file_metadata = {"name": filename, "parents": [folder_id]}
-        uploaded = service.files().create(body=file_metadata, media_body=media, fields="id, webViewLink", supportsAllDrives=True).execute()
-        return uploaded.get("webViewLink", "-")
-
-    def backup_excel(filename, df):
-        """สำรองไฟล์ Excel ก่อนบันทึก"""
-        try:
-            timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"backup_{timestamp}_{filename}"
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-                df.to_excel(writer, index=False)
-            output.seek(0)
-            service.files().create(
-                body={"name": backup_name, "parents": [FOLDER_ID]},
-                media_body=MediaIoBaseUpload(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-                fields="id",
-                supportsAllDrives=True
-            ).execute()
-        except Exception as e:
-            st.error(f"⚠️ ไม่สามารถสำรองไฟล์ได้: {e}")
-
-    def callback_submit():
-        st.session_state.submitted = True
-
-    # ========== เริ่มระบบ ==========
-    if "submitted" not in st.session_state:
-        st.session_state.submitted = False
-
-    staff_groups = sorted(df_travel["กลุ่มงาน"].dropna().unique()) if not df_travel.empty and "กลุ่มงาน" in df_travel.columns else ["กลุ่มบริหารทั่วไป", "กลุ่มพัฒนาองค์กร", "ศูนย์แมลง 9.1", "ศูนย์แมลง 9.2"]
-    
+    st.header("🧭 บันทึกข้อมูลไปราชการ (หมู่คณะ)")
     with st.form("form_travel_group"):
-        common_data_ui = {
-            "กลุ่มงาน": st.selectbox("กลุ่มงาน", staff_groups, disabled=st.session_state.submitted),
-            "กิจกรรม": st.text_input("กิจกรรม/โครงการ", disabled=st.session_state.submitted),
-            "สถานที่": st.text_input("สถานที่", disabled=st.session_state.submitted),
-            "วันที่เริ่ม": st.date_input("วันที่เริ่ม", dt.date.today(), key="travel_start_date", disabled=st.session_state.submitted),
-            "วันที่สิ้นสุด": st.date_input("วันที่สิ้นสุด", dt.date.today(), key="travel_end_date", disabled=st.session_state.submitted)
+        data_ui = {
+            "กลุ่มงาน": st.selectbox("กลุ่มงาน", staff_groups),
+            "กิจกรรม": st.text_input("กิจกรรม/โครงการ"),
+            "สถานที่": st.text_input("สถานที่"),
+            "วันที่เริ่ม": st.date_input("วันที่เริ่ม", dt.date.today()),
+            "วันที่สิ้นสุด": st.date_input("วันที่สิ้นสุด", dt.date.today())
         }
-        days = count_weekdays(st.session_state.travel_start_date, st.session_state.travel_end_date)
-        if days > 0: st.caption(f"🗓️ รวมเฉพาะวันทำการ {days} วัน")
+        days = count_weekdays(data_ui["วันที่เริ่ม"], data_ui["วันที่สิ้นสุด"])
+        if days > 0:
+            st.caption(f"🗓️ รวมวันทำการ {days} วัน")
 
-        selected_names = st.multiselect("เลือกชื่อเจ้าหน้าที่ (เลือกได้หลายคน)", options=all_names, disabled=st.session_state.submitted)
-        new_names_str = st.text_area("เพิ่มชื่อเจ้าหน้าที่ใหม่ (1 ชื่อต่อ 1 บรรทัด)", disabled=st.session_state.submitted)
-        uploaded_file = st.file_uploader("แนบไฟล์คำสั่ง/เอกสารอนุมัติ (PDF)", type="pdf", disabled=st.session_state.submitted)
-        submitted_travel = st.form_submit_button("💾 บันทึกข้อมูล", on_click=callback_submit, disabled=st.session_state.submitted)
+        selected = st.multiselect("รายชื่อผู้เดินทาง", options=all_names)
+        new_names = st.text_area("เพิ่มชื่อใหม่ (ถ้ามี)", placeholder="ใส่ชื่อทีละบรรทัด")
+        upload = st.file_uploader("แนบไฟล์คำสั่ง (PDF)", type="pdf")
 
-    if submitted_travel:
-        final_names = list(set(selected_names + [name.strip() for name in new_names_str.split('\n') if name.strip()]))
-        if not final_names:
+        submitted = st.form_submit_button("💾 บันทึกข้อมูล")
+
+    if submitted:
+        names = list(set(selected + [x.strip() for x in new_names.splitlines() if x.strip()]))
+        if not names:
             st.warning("กรุณาเลือกหรือกรอกชื่ออย่างน้อย 1 คน")
-            st.session_state.submitted = False
-        elif common_data_ui["วันที่เริ่ม"] > common_data_ui["วันที่สิ้นสุด"]:
-            st.error("'วันที่เริ่ม' ต้องมาก่อน 'วันที่สิ้นสุด'")
-            st.session_state.submitted = False
+        elif data_ui["วันที่เริ่ม"] > data_ui["วันที่สิ้นสุด"]:
+            st.error("วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด")
         else:
-            with st.spinner("⏳ กำลังบันทึกและอัปโหลดไฟล์..."):
-                folder_id = get_or_create_folder(ATTACHMENT_FOLDER_NAME, FOLDER_ID)
-                link = "-"
-                if uploaded_file:
-                    pdf_filename = f'{common_data_ui["วันที่เริ่ม"].strftime("%Y-%m-%d")}_{common_data_ui["กิจกรรม"].replace(" ", "_")}_{final_names[0].replace(" ", "_")}.pdf'
-                    link = upload_pdf_to_drive(uploaded_file, pdf_filename, folder_id)
-                backup_excel(FILE_TRAVEL, df_travel)
-                num_days = count_weekdays(common_data_ui["วันที่เริ่ม"], common_data_ui["วันที่สิ้นสุด"])
-                new_records = []
-                now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-                for n in final_names:
-                    others = ", ".join([o for o in final_names if o != n]) or "-"
-                    new_records.append({**common_data_ui, "ชื่อ-สกุล": n, "จำนวนวัน": num_days, "ผู้ร่วมเดินทาง": others, "ลิงก์เอกสาร": link, "last_update": now})
-                if new_records:
-                    df_travel_new = pd.concat([df_travel, pd.DataFrame(new_records)], ignore_index=True)
-                    write_excel_to_drive(FILE_TRAVEL, df_travel_new)
-                    st.success("✅ บันทึกข้อมูลสำเร็จ!")
-                    st.session_state.submitted = False
-                    st.rerun()
+            folder_id = get_or_create_folder(ATTACHMENT_FOLDER_NAME, FOLDER_ID)
+            file_link = "-"
+            if upload:
+                safe_name = re.sub(r"[^\wก-๙]", "_", data_ui["กิจกรรม"])
+                filename = f"{data_ui['วันที่เริ่ม']}_{safe_name}_{names[0]}.pdf"
+                file_link = upload_pdf_to_drive(upload, filename, folder_id)
 
-    st.markdown("---")
-    st.markdown("### 🔍 ค้นหาข้อมูลรายบุคคล")
-    search_name_travel = st.text_input("พิมพ์ชื่อ-สกุลเพื่อค้นหา (ไปราชการ)", "")
-    df_display_travel = df_travel[df_travel['ชื่อ-สกุล'].str.contains(search_name_travel, case=False, na=False)] if search_name_travel else df_travel
-    st.dataframe(
-        df_display_travel.astype(str).sort_values("วันที่เริ่ม", ascending=False),
-        column_config={"ลิงก์เอกสาร": st.column_config.LinkColumn("เอกสารแนบ", display_text="🔗 เปิดไฟล์")},
-        use_container_width=True
-    )
+            backup_excel(FILE_TRAVEL, df_travel)
+            now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+            records = []
+            for n in names:
+                records.append({
+                    **data_ui, "ชื่อ-สกุล": n,
+                    "ผู้ร่วมเดินทาง": ", ".join([x for x in names if x != n]) or "-",
+                    "จำนวนวัน": days,
+                    "ลิงก์เอกสาร": file_link,
+                    "last_update": now
+                })
+            df_new = pd.concat([df_travel, pd.DataFrame(records)], ignore_index=True)
+            write_excel_to_drive(FILE_TRAVEL, df_new)
+            st.success("✅ บันทึกข้อมูลเรียบร้อยแล้ว!")
+            st.rerun()
 
+    st.markdown("### 📋 ข้อมูลไปราชการทั้งหมด")
+    if not df_travel.empty:
+        st.dataframe(df_travel.astype(str).sort_values("วันที่เริ่ม", ascending=False),
+                     column_config={"ลิงก์เอกสาร": st.column_config.LinkColumn("เอกสารแนบ", display_text="🔗 เปิดไฟล์")})
+    else:
+        st.info("ยังไม่มีข้อมูลไปราชการ")
 
-# -----------------------------
+# ----------------------------
 # 🕒 การลา
-# -----------------------------
+# ----------------------------
 elif menu == "🕒 การลา":
     st.header("🕒 บันทึกข้อมูลการลา")
-
-    leave_types = ["ลาป่วย", "ลากิจส่วนตัว", "ลาพักผ่อน", "ลาคลอดบุตร", "ลาอื่น ๆ"]
-    staff_groups = sorted(df_leave["กลุ่มงาน"].dropna().unique()) if not df_leave.empty and "กลุ่มงาน" in df_leave.columns else ["กลุ่มบริหารทั่วไป", "กลุ่มพัฒนาองค์กร", "ศูนย์แมลง 9.1", "ศูนย์แมลง 9.2"]
-
-    if "submitted" not in st.session_state:
-        st.session_state.submitted = False
-
     with st.form("form_leave"):
-        col1, col2 = st.columns(2)
-        with col1:
-            name = st.text_input("ชื่อ-สกุล", disabled=st.session_state.submitted)
-            start_date = st.date_input("วันที่เริ่มลา", dt.date.today(), key="leave_start_date", disabled=st.session_state.submitted)
-        with col2:
-            group = st.selectbox("กลุ่มงาน", staff_groups, disabled=st.session_state.submitted)
-            end_date = st.date_input("วันที่สิ้นสุดการลา", dt.date.today(), key="leave_end_date", disabled=st.session_state.submitted)
-        leave_type = st.selectbox("ประเภทการลา", leave_types, disabled=st.session_state.submitted)
-        days = count_weekdays(st.session_state.leave_start_date, st.session_state.leave_end_date)
-        if days > 0: st.caption(f"🗓️ รวมเฉพาะวันทำการ {days} วัน")
-        submitted_leave = st.form_submit_button("💾 บันทึกข้อมูล", on_click=callback_submit, disabled=st.session_state.submitted)
+        name = st.text_input("ชื่อ-สกุล")
+        group = st.selectbox("กลุ่มงาน", staff_groups)
+        leave_type = st.selectbox("ประเภทการลา", leave_types)
+        start = st.date_input("วันที่เริ่ม", dt.date.today())
+        end = st.date_input("วันที่สิ้นสุด", dt.date.today())
+        days = count_weekdays(start, end)
+        if days > 0:
+            st.caption(f"🗓️ รวมวันทำการ {days} วัน")
+        submit_leave = st.form_submit_button("💾 บันทึกข้อมูล")
 
-    if submitted_leave:
-        data = {"ชื่อ-สกุล": name, "กลุ่มงาน": group, "ประเภทการลา": leave_type, "วันที่เริ่ม": start_date, "วันที่สิ้นสุด": end_date}
-        if not data["ชื่อ-สกุล"]:
-            st.warning("กรุณากรอกชื่อ-สกุล")
-            st.session_state.submitted = False
-        elif data["วันที่เริ่ม"] > data["วันที่สิ้นสุด"]:
-            st.error("'วันที่เริ่ม' ต้องมาก่อน 'วันที่สิ้นสุด'")
-            st.session_state.submitted = False
+    if submit_leave:
+        if not name:
+            st.warning("กรุณากรอกชื่อ")
+        elif start > end:
+            st.error("วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด")
         else:
-            with st.spinner("⏳ กำลังบันทึกข้อมูล..."):
-                backup_excel(FILE_LEAVE, df_leave)
-                data["จำนวนวันลา"] = count_weekdays(data["วันที่เริ่ม"], data["วันที่สิ้นสุด"])
-                data["last_update"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-                df_leave_new = pd.concat([df_leave, pd.DataFrame([data])], ignore_index=True)
-                write_excel_to_drive(FILE_LEAVE, df_leave_new)
-                st.success("✅ บันทึกข้อมูลการลาเรียบร้อยแล้ว!")
-                st.session_state.submitted = False
-                st.rerun()
+            backup_excel(FILE_LEAVE, df_leave)
+            rec = {
+                "ชื่อ-สกุล": name, "กลุ่มงาน": group, "ประเภทการลา": leave_type,
+                "วันที่เริ่ม": start, "วันที่สิ้นสุด": end,
+                "จำนวนวันลา": days,
+                "last_update": dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+            }
+            df_new = pd.concat([df_leave, pd.DataFrame([rec])], ignore_index=True)
+            write_excel_to_drive(FILE_LEAVE, df_new)
+            st.success("✅ บันทึกข้อมูลการลาเรียบร้อย")
+            st.rerun()
 
-    st.markdown("---")
-    st.markdown("### 🔍 ค้นหาข้อมูลรายบุคคล")
-    search_name_leave = st.text_input("พิมพ์ชื่อ-สกุลเพื่อค้นหา (การลา)", "")
-    df_display_leave = df_leave[df_leave['ชื่อ-สกุล'].str.contains(search_name_leave, case=False, na=False)] if search_name_leave else df_leave
-    st.dataframe(df_display_leave.astype(str).sort_values("วันที่เริ่ม", ascending=False), use_container_width=True)
+    st.markdown("### 📋 ข้อมูลการลาทั้งหมด")
+    if not df_leave.empty:
+        st.dataframe(df_leave.astype(str).sort_values("วันที่เริ่ม", ascending=False))
+    else:
+        st.info("ยังไม่มีข้อมูลการลา")
 
 elif menu == "🧑‍💼 ผู้ดูแลระบบ":
     st.header("🔐 ผู้ดูแลระบบ")
@@ -518,6 +457,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
