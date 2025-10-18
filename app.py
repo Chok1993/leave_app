@@ -274,6 +274,93 @@ elif menu == "📊 Dashboard":
                 tooltip=['ชื่อ-สกุล', 'จำนวนครั้ง']
             ).properties(height=300), use_container_width=True)
 
+    st.markdown("---")
+    st.markdown("#### **มุมมองสำหรับ HR**")
+
+    hr_col1, hr_col2 = st.columns(2)
+
+    with hr_col1:
+        st.markdown("##### **สัดส่วนประเภทการลา**")
+        if not df_leave.empty and 'ประเภทการลา' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
+            # แปลงประเภทข้อมูลก่อน Group by
+            df_leave['จำนวนวันลา'] = pd.to_numeric(df_leave['จำนวนวันลา'], errors='coerce')
+            df_leave_cleaned = df_leave.dropna(subset=['จำนวนวันลา'])
+
+            leave_type_dist = df_leave_cleaned.groupby('ประเภทการลา')['จำนวนวันลา'].sum().reset_index()
+            
+            chart_leave_type = alt.Chart(leave_type_dist).mark_arc(innerRadius=50).encode(
+                theta=alt.Theta(field="จำนวนวันลา", type="quantitative"),
+                color=alt.Color(field="ประเภทการลา", type="nominal", title="ประเภทการลา"),
+                tooltip=['ประเภทการลา', 'จำนวนวันลา']
+            ).properties(height=300)
+            st.altair_chart(chart_leave_type, use_container_width=True)
+
+    with hr_col2:
+        st.markdown("##### **แนวโน้มการลารายเดือน**")
+        if not df_leave.empty and 'วันที่เริ่ม' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
+            # สร้างสำเนาเพื่อป้องกัน SettingWithCopyWarning
+            df_leave_copy = df_leave.copy()
+            df_leave_copy['วันที่เริ่ม'] = pd.to_datetime(df_leave_copy['วันที่เริ่ม'], errors='coerce')
+            df_leave_copy['จำนวนวันลา'] = pd.to_numeric(df_leave_copy['จำนวนวันลา'], errors='coerce')
+            df_leave_copy.dropna(subset=['วันที่เริ่ม', 'จำนวนวันลา'], inplace=True)
+            
+            df_leave_copy['เดือน'] = df_leave_copy['วันที่เริ่ม'].dt.strftime('%Y-%m')
+            monthly_leave = df_leave_copy.groupby('เดือน')['จำนวนวันลา'].sum().reset_index()
+            
+            chart_monthly_trend = alt.Chart(monthly_leave).mark_line(point=True, strokeWidth=3).encode(
+                x=alt.X('เดือน:T', title='เดือน'),
+                y=alt.Y('จำนวนวันลา:Q', title='จำนวนวันลาสะสม'),
+                tooltip=['เดือน', 'จำนวนวันลา']
+            ).properties(height=300)
+            st.altair_chart(chart_monthly_trend, use_container_width=True)
+
+    # กราฟแสดงพนักงานที่มาสาย/ขาดงานบ่อย
+    st.markdown("##### **Top 5 พนักงานที่มาสาย/ขาด/ออกก่อนเวลา**")
+    if not df_att.empty:
+        # คำนวณสถานะรายวัน (ใช้โค้ดจากหน้า 'การมาปฏิบัติงาน')
+        df_att_copy = df_att.copy()
+        df_att_copy["วันที่"] = pd.to_datetime(df_att_copy["วันที่"], errors="coerce")
+        
+        # ใช้เฉพาะเดือนล่าสุดเพื่อความเร็ว
+        latest_month = df_att_copy["วันที่"].dt.strftime("%Y-%m").max()
+        df_month = df_att_copy[df_att_copy["วันที่"].dt.strftime("%Y-%m") == latest_month]
+
+        name_col = next((c for c in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if c in df_month.columns), None)
+
+        if name_col:
+            records = []
+            for name in df_month[name_col].unique():
+                df_person = df_month[df_month[name_col] == name]
+                for _, row in df_person.iterrows():
+                    d = row['วันที่']
+                    if d.weekday() >= 5: continue # ไม่นับวันหยุด
+
+                    status = "มาปกติ"
+                    WORK_START = dt.time(8, 30)
+                    t_in = pd.to_datetime(str(row.get("เวลาเข้า"))).time() if row.get("เวลาเข้า") else None
+                    
+                    if not t_in:
+                        status = "ขาดงาน"
+                    elif t_in > WORK_START:
+                        status = "มาสาย"
+                    
+                    if status != "มาปกติ":
+                      records.append({"ชื่อพนักงาน": name, "สถานะ": status})
+            
+            if records:
+                df_issues = pd.DataFrame(records)
+                top_issues = df_issues['ชื่อพนักงาน'].value_counts().nlargest(5).reset_index()
+                top_issues.columns = ['ชื่อพนักงาน', 'จำนวนครั้ง']
+
+                chart_top_issues = alt.Chart(top_issues).mark_bar(color='indianred').encode(
+                    x=alt.X('จำนวนครั้ง:Q', title='จำนวนครั้ง (สาย/ขาด)'),
+                    y=alt.Y('ชื่อพนักงาน:N', sort='-x', title='ชื่อพนักงาน'),
+                    tooltip=['ชื่อพนักงาน', 'จำนวนครั้ง']
+                ).properties(height=300)
+                st.altair_chart(chart_top_issues, use_container_width=True)
+            else:
+                st.info("ไม่พบข้อมูลการมาสายหรือขาดงานในเดือนล่าสุด")
+                
 # ===========================
 # 📅 การมาปฏิบัติงาน
 # ===========================
@@ -561,3 +648,4 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
