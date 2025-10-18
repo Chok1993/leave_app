@@ -1,6 +1,6 @@
 # ====================================================
 # 📋 โปรแกรมติดตามการลาและไปราชการ (สคร.9)
-# ✅ Final Version: Complete Code - No Omissions
+# ✅ Final Version: Definitive Fix for All Errors
 # ====================================================
 
 import io
@@ -35,6 +35,7 @@ FILE_ATTEND = "scan_report.xlsx"
 FILE_LEAVE  = "leave_report.xlsx"
 FILE_TRAVEL = "travel_report.xlsx"
 
+# --- สร้าง service object สำหรับเชื่อมต่อ Google Drive ---
 service = build("drive", "v3", credentials=creds)
 
 # ===========================
@@ -133,15 +134,21 @@ st.title("📋 ระบบติดตามการลา ไปราชก�
 if 'submitted' not in st.session_state: st.session_state.submitted = False
 def callback_submit(): st.session_state.submitted = True
 
+# --- ‼️ แก้ไขตรรกะการรวมรายชื่อทั้งหมดให้ปลอดภัยและเข้าใจง่าย ‼️ ---
 all_names_list = []
-name_col_att = next((col for col in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if col in df_att.columns), None)
+# 1. รวบรวมชื่อจาก df_leave
 if not df_leave.empty and 'ชื่อ-สกุล' in df_leave.columns:
     all_names_list.extend(df_leave['ชื่อ-สกุล'].dropna().tolist())
+# 2. รวบรวมชื่อจาก df_travel
 if not df_travel.empty and 'ชื่อ-สกุล' in df_travel.columns:
     all_names_list.extend(df_travel['ชื่อ-สกุล'].dropna().tolist())
+# 3. รวบรวมชื่อจาก df_att
+name_col_att = next((col for col in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if col in df_att.columns), None)
 if not df_att.empty and name_col_att:
     all_names_list.extend(df_att[name_col_att].dropna().tolist())
+# 4. สร้าง list รายชื่อที่ไม่ซ้ำกันและเรียงลำดับ
 all_names = sorted(list(set(all_names_list)))
+# -------------------------------------------------------------
 
 staff_groups = sorted(["กลุ่มโรคติดต่อ", "กลุ่มระบาดวิทยาฯ", "กลุ่มพัฒนาองค์กร", "กลุ่มบริหารทั่วไป", "กลุ่มโรคไม่ติดต่อ", "กลุ่มห้องปฏิบัติการฯ", "กลุ่มพัฒนานวัตกรรมฯ", "กลุ่มโรคติดต่อเรื้อรัง", "ศตม.9.1 ชัยภูมิ", "ศตม.9.2 บุรีรัมย์", "ศตม.9.3 สุรินทร์", "ศตม.9.4 ปากช่อง", "ด่านฯ ช่องจอม", "ศูนย์เวชศาสตร์ป้องกัน", "กลุ่มสื่อสารความเสี่ยง", "กลุ่มอาชีวสิ่งแวดล้อม"])
 leave_types = ["ลาป่วย", "ลากิจ", "ลาพักผ่อน", "อื่นๆ"]
@@ -176,39 +183,52 @@ elif menu == "📊 Dashboard":
 
 elif menu == "📅 การมาปฏิบัติงาน":
     st.header("📅 สรุปการมาปฏิบัติงานรายวัน (ตรวจจากสแกน + ลา + ราชการ)")
+
     if df_att.empty:
         st.warning(f"ยังไม่มีข้อมูลสแกนเข้า-ออกในระบบ (จากไฟล์ {FILE_ATTEND})")
         st.stop()
+
     name_col = next((col for col in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if col in df_att.columns), None)
     if not name_col:
         st.error("⚠️ ไม่พบคอลัมน์ชื่อบุคลากร (เช่น 'ชื่อพนักงาน' หรือ 'ชื่อ-สกุล') ในไฟล์สแกน")
         st.stop()
+
     df_att["วันที่"] = pd.to_datetime(df_att["วันที่"], errors="coerce")
     for df in [df_leave, df_travel]:
         for c in ["วันที่เริ่ม", "วันที่สิ้นสุด"]:
-            if c in df.columns: df[c] = pd.to_datetime(df[c], errors="coerce")
+            if c in df.columns:
+                df[c] = pd.to_datetime(df[c], errors="coerce")
+
     df_att["เดือน"] = df_att["วันที่"].dt.strftime("%Y-%m")
     months = sorted(df_att["เดือน"].dropna().unique())
     if not months:
         st.warning("ไม่พบข้อมูลเดือนที่ถูกต้องในไฟล์สแกน")
         st.stop()
+        
     selected_month = st.selectbox("เลือกเดือนที่ต้องการดู", months, index=len(months)-1)
     selected_names = st.multiselect("เลือกชื่อบุคลากร (ว่าง=ทุกคน)", all_names)
+    
     df_month = df_att[df_att["เดือน"] == selected_month].copy()
-    WORK_START, WORK_END = dt.time(8, 30), dt.time(16, 30)
+    
+    WORK_START = dt.time(8, 30)
+    WORK_END = dt.time(16, 30)
     month_start = pd.to_datetime(selected_month + "-01").date()
     month_end = (month_start + pd.offsets.MonthEnd(0)).date()
     date_range = pd.date_range(month_start, month_end, freq="D")
+    
     records = []
     names_to_process = selected_names if selected_names else all_names
+    
     for name in names_to_process:
         for d in date_range:
             rec = { "ชื่อพนักงาน": name, "วันที่": d.date(), "เวลาเข้า": "", "เวลาออก": "", "หมายเหตุ": "", "สถานะ": "" }
             att = df_month[(df_month[name_col] == name) & (df_month["วันที่"].dt.date == d.date())]
             in_leave = not df_leave.empty and (df_leave[ (df_leave["ชื่อ-สกุล"] == name) & (df_leave["วันที่เริ่ม"] <= d) & (df_leave["วันที่สิ้นสุด"] >= d) ].shape[0] > 0)
             in_travel = not df_travel.empty and (df_travel[ (df_travel["ชื่อ-สกุล"] == name) & (df_travel["วันที่เริ่ม"] <= d) & (df_travel["วันที่สิ้นสุด"] >= d) ].shape[0] > 0)
+
             if in_leave:
-                rec["สถานะ"] = f"ลา ({df_leave.loc[(df_leave['ชื่อ-สกุล'] == name) & (df_leave['วันที่เริ่ม'] <= d) & (df_leave['วันที่สิ้นสุด'] >= d), 'ประเภทการลา'].iloc[0]})"
+                leave_type = df_leave.loc[(df_leave["ชื่อ-สกุล"] == name) & (df_leave["วันที่เริ่ม"] <= d) & (df_leave["วันที่สิ้นสุด"] >= d), "ประเภทการลา"].iloc[0]
+                rec["สถานะ"] = f"ลา ({leave_type})"
             elif in_travel:
                 rec["สถานะ"] = "ไปราชการ"
             elif not att.empty:
@@ -228,29 +248,37 @@ elif menu == "📅 การมาปฏิบัติงาน":
             else:
                 rec["สถานะ"] = "วันหยุด" if d.weekday() >= 5 else "ขาดงาน"
             records.append(rec)
+
     df_daily = pd.DataFrame(records)
-    if not df_daily.empty: df_daily = df_daily.sort_values(["ชื่อพนักงาน", "วันที่"])
+    if not df_daily.empty:
+        df_daily = df_daily.sort_values(["ชื่อพนักงาน", "วันที่"])
+
     def color_status(val):
         colors = {"มาปกติ": "background-color:#d4edda", "มาสาย": "background-color:#ffeeba", "ออกก่อน": "background-color:#f8d7da", "มาสายและออกก่อน": "background-color:#fcd5b5", "ลา": "background-color:#d1ecf1", "ไปราชการ": "background-color:#fff3cd", "วันหยุด": "background-color:#e2e3e5", "ขาดงาน": "background-color:#f5c6cb"}
         s_val = str(val)
         for key, color in colors.items():
             if key in s_val: return color
         return ""
+
     st.markdown("### 📋 ตารางสรุปสถานะรายวัน")
     st.dataframe(df_daily.style.applymap(color_status, subset=["สถานะ"]), use_container_width=True, height=600)
+
     st.markdown("---")
     st.subheader("📊 สรุปสถิติรวมต่อเดือนต่อคน")
+    
     def simplify_status(s):
         return "ลา" if isinstance(s, str) and s.startswith("ลา") else s
     df_daily["สถานะย่อ"] = df_daily["สถานะ"].apply(simplify_status)
+    
     summary = df_daily.pivot_table(index="ชื่อพนักงาน", columns="สถานะย่อ", aggfunc='size', fill_value=0).reset_index()
     st.dataframe(summary, use_container_width=True)
+
     excel_output = io.BytesIO()
     with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
         df_daily.to_excel(writer, index=False, sheet_name="รายวัน")
         summary.to_excel(writer, index=False, sheet_name="สรุปสถิติรวม")
     excel_output.seek(0)
-    st.download_button("📥 ดาวน์โหลดรายงานสรุป", data=excel_output, file_name=f"รายงานสรุป_{selected_month}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("📥 ดาวน์โหลดรายงานสรุป (รายวัน + รวมต่อเดือน)", data=excel_output, file_name=f"รายงานสรุป_{selected_month}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 elif menu == "🧭 การไปราชการ":
     st.header("🧭 บันทึกการไปราชการ (สำหรับหมู่คณะ)")
