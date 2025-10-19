@@ -230,6 +230,48 @@ leave_types = ["ลาป่วย", "ลากิจส่วนตัว", "�
 st.markdown("##### **สำนักงานป้องกันควบคุมโรคที่ 9 จังหวัดนครราชสีมา**")
 st.title("📋 ระบบติดตามการลา ไปราชการ และการปฏิบัติงาน")
 
+# ==============================================
+# 🧩 ฟังก์ชันโหลดข้อมูลใหม่ + ตรวจ header อัตโนมัติ
+# ==============================================
+def load_all_data(force_refresh=False):
+    """โหลดข้อมูลจากไฟล์ใน Drive ทั้งหมด"""
+    if force_refresh:
+        st.cache_data.clear()
+
+    def read_smart_excel(filename):
+        try:
+            file_id = get_file_id(filename)
+            if not file_id:
+                st.warning(f"⚠️ ไม่พบไฟล์ {filename}")
+                return pd.DataFrame()
+
+            req = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, req)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            fh.seek(0)
+
+            # ลองอ่าน 2 แบบ
+            try:
+                df = pd.read_excel(fh, engine="openpyxl", header=0)
+            except Exception:
+                fh.seek(0)
+                df = pd.read_excel(fh, engine="openpyxl", header=1)
+
+            df = df.dropna(how="all")  # ตัดแถวว่างทั้งหมด
+            return df
+        except Exception as e:
+            st.error(f"อ่านไฟล์ {filename} ไม่ได้: {e}")
+            return pd.DataFrame()
+
+    df_scan = read_smart_excel(FILE_ATTEND)
+    df_leave = read_smart_excel(FILE_LEAVE)
+    df_travel = read_smart_excel(FILE_TRAVEL)
+
+    return df_scan, df_leave, df_travel
+
 menu = st.sidebar.radio("เลือกเมนู", ["หน้าหลัก", "📊 Dashboard", "📅 การมาปฏิบัติงาน", "🧭 การไปราชการ", "🕒 การลา", "🧑‍💼 ผู้ดูแลระบบ"])
 
 # ===========================
@@ -671,6 +713,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
