@@ -311,120 +311,220 @@ if menu == "หน้าหลัก":
     st.image("https://ddc.moph.go.th/uploads/files/11120210817094038.jpg", caption="สำนักงานป้องกันควบคุมโรคที่ 9 นครราชสีมา", use_container_width=True)
 
 # ===========================
-# 📊 Dashboard
+# 📊 Dashboard (Modern UI)
 # ===========================
 elif menu == "📊 Dashboard":
-    st.header("📊 Dashboard ภาพรวมและข้อมูลเชิงลึก")
-    st.markdown("#### **ภาพรวมสะสม**")
+    st.header("📊 HR Dashboard – Overview & Insights")
+    st.caption("ภาพรวมการเดินทางราชการ • การลา • การสแกนเข้าออกงาน (Travel • Leave • Attendance)")
+
+    # ---------- Overview Cards ----------
+    st.markdown("### 🔎 Overview Summary")
     col1, col2, col3 = st.columns(3)
-    col1.metric("เดินทางราชการ (ครั้ง)", len(df_travel))
-    col2.metric("การลา (ครั้ง)", len(df_leave))
-    col3.metric("ข้อมูลสแกน (แถว)", len(df_att))
+
+    with col1:
+        st.metric(
+            label="เดินทางราชการ (ครั้ง) | Business Trips",
+            value=len(df_travel)
+        )
+    with col2:
+        st.metric(
+            label="การลา (ครั้ง) | Leave Records",
+            value=len(df_leave)
+        )
+    with col3:
+        st.metric(
+            label="ข้อมูลสแกน (แถว) | Attendance Rows",
+            value=len(df_att)
+        )
+
     st.markdown("---")
 
+    # ---------- Analytical Views ----------
+    st.markdown("### 📈 Key Analytics")
     col_chart1, col_chart2 = st.columns(2)
-    with col_chart1:
-        st.markdown("##### **การลาแยกตามกลุ่มงาน**")
-        if not df_leave.empty and 'กลุ่มงาน' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
-            leave_by_group = df_leave.groupby('กลุ่มงาน')['จำนวนวันลา'].sum().sort_values(ascending=False).reset_index()
-            st.altair_chart(alt.Chart(leave_by_group).mark_bar().encode(
-                x=alt.X('จำนวนวันลา:Q', title='รวมวันลา'),
-                y=alt.Y('กลุ่มงาน:N', sort='-x', title='กลุ่มงาน'),
-                tooltip=['กลุ่มงาน', 'จำนวนวันลา']
-            ).properties(height=300), use_container_width=True)
 
+    # การลาแยกตามกลุ่มงาน
+    with col_chart1:
+        st.markdown("#### Leave by Division (การลาแยกตามกลุ่มงาน)")
+        if not df_leave.empty and 'กลุ่มงาน' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
+            df_leave['จำนวนวันลา'] = pd.to_numeric(df_leave['จำนวนวันลา'], errors='coerce')
+            leave_by_group = (
+                df_leave
+                .dropna(subset=['กลุ่มงาน', 'จำนวนวันลา'])
+                .groupby('กลุ่มงาน', as_index=False)['จำนวนวันลา']
+                .sum()
+                .sort_values('จำนวนวันลา', ascending=False)
+            )
+            chart_leave_group = (
+                alt.Chart(leave_by_group)
+                .mark_bar(color="#4F46E5")
+                .encode(
+                    x=alt.X('จำนวนวันลา:Q', title='Total Leave Days'),
+                    y=alt.Y('กลุ่มงาน:N', sort='-x', title='กลุ่มงาน (Division)'),
+                    tooltip=['กลุ่มงาน', 'จำนวนวันลา']
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(chart_leave_group, use_container_width=True)
+        else:
+            st.info("⚠️ ไม่มีข้อมูลการลาเพียงพอสำหรับแสดงตามกลุ่มงาน")
+
+    # ผู้เดินทางราชการบ่อยที่สุด
     with col_chart2:
-        st.markdown("##### **ผู้เดินทางราชการบ่อยที่สุด (Top 5)**")
+        st.markdown("#### Top 5 Frequent Travelers (ผู้เดินทางราชการบ่อยที่สุด)")
         if not df_travel.empty and 'ชื่อ-สกุล' in df_travel.columns:
-            top_travelers = df_travel['ชื่อ-สกุล'].value_counts().nlargest(5).reset_index()
+            top_travelers = (
+                df_travel['ชื่อ-สกุล']
+                .value_counts()
+                .nlargest(5)
+                .reset_index()
+            )
             top_travelers.columns = ['ชื่อ-สกุล', 'จำนวนครั้ง']
-            st.altair_chart(alt.Chart(top_travelers).mark_bar(color='#ff8c00').encode(
-                x=alt.X('จำนวนครั้ง:Q', title='จำนวนครั้ง'),
-                y=alt.Y('ชื่อ-สกุล:N', sort='-x', title='ชื่อ-สกุล'),
-                tooltip=['ชื่อ-สกุล', 'จำนวนครั้ง']
-            ).properties(height=300), use_container_width=True)
+
+            chart_top_travel = (
+                alt.Chart(top_travelers)
+                .mark_bar(color="#0EA5E9")
+                .encode(
+                    x=alt.X('จำนวนครั้ง:Q', title='Number of Trips'),
+                    y=alt.Y('ชื่อ-สกุล:N', sort='-x', title='ชื่อ-สกุล (Name)'),
+                    tooltip=['ชื่อ-สกุล', 'จำนวนครั้ง']
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(chart_top_travel, use_container_width=True)
+        else:
+            st.info("⚠️ ไม่มีข้อมูลเดินทางราชการเพียงพอสำหรับจัดอันดับ")
 
     st.markdown("---")
-    st.markdown("#### **มุมมองสำหรับ HR**")
+    st.markdown("### 🧩 HR Insights")
 
     hr_col1, hr_col2 = st.columns(2)
 
+    # สัดส่วนประเภทการลา
     with hr_col1:
-        st.markdown("##### **สัดส่วนประเภทการลา**")
+        st.markdown("#### Leave Type Distribution (สัดส่วนประเภทการลา)")
         if not df_leave.empty and 'ประเภทการลา' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
             df_leave['จำนวนวันลา'] = pd.to_numeric(df_leave['จำนวนวันลา'], errors='coerce')
             df_leave_cleaned = df_leave.dropna(subset=['จำนวนวันลา'])
-            leave_type_dist = df_leave_cleaned.groupby('ประเภทการลา')['จำนวนวันลา'].sum().reset_index()
-            chart_leave_type = alt.Chart(leave_type_dist).mark_arc(innerRadius=50).encode(
-                theta=alt.Theta(field="จำนวนวันลา", type="quantitative"),
-                color=alt.Color(field="ประเภทการลา", type="nominal", title="ประเภทการลา"),
-                tooltip=['ประเภทการลา', 'จำนวนวันลา']
-            ).properties(height=300)
-            st.altair_chart(chart_leave_type, use_container_width=True)
 
+            leave_type_dist = (
+                df_leave_cleaned
+                .groupby('ประเภทการลา', as_index=False)['จำนวนวันลา']
+                .sum()
+            )
+            chart_leave_type = (
+                alt.Chart(leave_type_dist)
+                .mark_arc(innerRadius=60)
+                .encode(
+                    theta=alt.Theta(field="จำนวนวันลา", type="quantitative", title="Total Leave Days"),
+                    color=alt.Color(field="ประเภทการลา", type="nominal", title="Leave Type"),
+                    tooltip=['ประเภทการลา', 'จำนวนวันลา']
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(chart_leave_type, use_container_width=True)
+        else:
+            st.info("⚠️ ไม่มีข้อมูลประเภทการลาเพียงพอสำหรับแสดงสัดส่วน")
+
+    # แนวโน้มการลารายเดือน
     with hr_col2:
-        st.markdown("##### **แนวโน้มการลารายเดือน**")
+        st.markdown("#### Monthly Leave Trend (แนวโน้มการลารายเดือน)")
         if not df_leave.empty and 'วันที่เริ่ม' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
             df_leave_copy = df_leave.copy()
             df_leave_copy['วันที่เริ่ม'] = pd.to_datetime(df_leave_copy['วันที่เริ่ม'], errors='coerce')
             df_leave_copy['จำนวนวันลา'] = pd.to_numeric(df_leave_copy['จำนวนวันลา'], errors='coerce')
             df_leave_copy.dropna(subset=['วันที่เริ่ม', 'จำนวนวันลา'], inplace=True)
-            df_leave_copy['เดือน'] = df_leave_copy['วันที่เริ่ม'].dt.strftime('%Y-%m')
-            monthly_leave = df_leave_copy.groupby('เดือน')['จำนวนวันลา'].sum().reset_index()
-            chart_monthly_trend = alt.Chart(monthly_leave).mark_line(point=True, strokeWidth=3).encode(
-                x=alt.X('เดือน:T', title='เดือน'),
-                y=alt.Y('จำนวนวันลา:Q', title='จำนวนวันลาสะสม'),
-                tooltip=['เดือน', 'จำนวนวันลา']
-            ).properties(height=300)
-            st.altair_chart(chart_monthly_trend, use_container_width=True)
 
-    st.markdown("##### **Top 5 พนักงานที่มาสาย/ขาด/ออกก่อนเวลา (เดือนล่าสุด)**")
+            df_leave_copy['เดือน'] = df_leave_copy['วันที่เริ่ม'].dt.to_period('M').dt.to_timestamp()
+            monthly_leave = (
+                df_leave_copy
+                .groupby('เดือน', as_index=False)['จำนวนวันลา']
+                .sum()
+            )
+
+            chart_monthly_trend = (
+                alt.Chart(monthly_leave)
+                .mark_line(point=True, strokeWidth=3, color="#22C55E")
+                .encode(
+                    x=alt.X('เดือน:T', title='Month'),
+                    y=alt.Y('จำนวนวันลา:Q', title='Total Leave Days'),
+                    tooltip=['เดือน', 'จำนวนวันลา']
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(chart_monthly_trend, use_container_width=True)
+        else:
+            st.info("⚠️ ไม่มีข้อมูลวันที่เริ่มการลาเพียงพอสำหรับแสดงแนวโน้มรายเดือน")
+
+    # ---------- Attendance Risk ----------
+    st.markdown("### 🚨 Attendance Risk – Top 5 (สาย/ขาด/ออกก่อนเวลา)")
+    st.caption("Top 5 พนักงานที่มาสายหรือขาดงานในเดือนล่าสุด (ยกเว้นวันที่ลา/ไปราชการ)")
+
     if not df_att.empty:
-        # --- เตรียมข้อมูลวันที่ให้เป็น Datetime ---
         df_att_copy = df_att.copy()
         df_att_copy["วันที่"] = pd.to_datetime(df_att_copy["วันที่"], errors="coerce")
-        df_leave['วันที่เริ่ม'] = pd.to_datetime(df_leave['วันที่เริ่ม'], errors='coerce')
-        df_leave['วันที่สิ้นสุด'] = pd.to_datetime(df_leave['วันที่สิ้นสุด'], errors='coerce')
-        # ✅ **เพิ่มการแปลงวันที่ของ df_travel**
-        df_travel['วันที่เริ่ม'] = pd.to_datetime(df_travel['วันที่เริ่ม'], errors='coerce')
-        df_travel['วันที่สิ้นสุด'] = pd.to_datetime(df_travel['วันที่สิ้นสุด'], errors='coerce')
+
+        if not df_leave.empty:
+            df_leave['วันที่เริ่ม'] = pd.to_datetime(df_leave['วันที่เริ่ม'], errors='coerce')
+            df_leave['วันที่สิ้นสุด'] = pd.to_datetime(df_leave['วันที่สิ้นสุด'], errors='coerce')
+        if not df_travel.empty:
+            df_travel['วันที่เริ่ม'] = pd.to_datetime(df_travel['วันที่เริ่ม'], errors='coerce')
+            df_travel['วันที่สิ้นสุด'] = pd.to_datetime(df_travel['วันที่สิ้นสุด'], errors='coerce')
 
         latest_month_str = df_att_copy["วันที่"].dt.strftime("%Y-%m").max()
         df_month = df_att_copy[df_att_copy["วันที่"].dt.strftime("%Y-%m") == latest_month_str]
+
         name_col = next((c for c in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if c in df_month.columns), None)
 
         if name_col and latest_month_str:
             records = []
             WORK_START = dt.time(8, 30)
-            all_days_in_month = pd.date_range(start=latest_month_str, end=pd.to_datetime(latest_month_str) + pd.offsets.MonthEnd(0), freq='D')
-            
-            for name in all_names:
-                for day in all_days_in_month:
-                    if day.weekday() >= 5: continue
 
-                    # --- ตรวจสอบสถานะ ลา และ ไปราชการ ---
-                    is_on_leave = not df_leave.empty and not df_leave[
-                        (df_leave["ชื่อ-สกุล"] == name) & (df_leave["วันที่เริ่ม"] <= day) & (df_leave["วันที่สิ้นสุด"] >= day)
-                    ].empty
-                    
-                    # ✅ **เพิ่มการตรวจสอบสถานะ "ไปราชการ"**
-                    is_on_travel = not df_travel.empty and not df_travel[
-                        (df_travel["ชื่อ-สกุล"] == name) & (df_travel["วันที่เริ่ม"] <= day) & (df_travel["วันที่สิ้นสุด"] >= day)
-                    ].empty
-                    
-                    # ถ้าลา หรือ ไปราชการ ให้ข้ามไปเลย
-                    if is_on_leave or is_on_travel: 
+            all_names_month = df_month[name_col].dropna().unique().tolist()
+            month_start = pd.to_datetime(latest_month_str)
+            all_days_in_month = pd.date_range(
+                start=month_start,
+                end=month_start + pd.offsets.MonthEnd(0),
+                freq='D'
+            )
+
+            for name in all_names_month:
+                for day in all_days_in_month:
+                    if day.weekday() >= 5:
                         continue
 
-                    # --- ตรวจสอบการมาทำงานจากข้อมูลสแกน ---
-                    att_record = df_month[(df_month[name_col] == name) & (df_month['วันที่'].dt.date == day.date())]
-                    status = ""
+                    is_on_leave = (
+                        not df_leave.empty and
+                        not df_leave[
+                            (df_leave["ชื่อ-สกุล"] == name) &
+                            (df_leave["วันที่เริ่ม"] <= day) &
+                            (df_leave["วันที่สิ้นสุด"] >= day)
+                        ].empty
+                    )
+                    is_on_travel = (
+                        not df_travel.empty and
+                        not df_travel[
+                            (df_travel["ชื่อ-สกุล"] == name) &
+                            (df_travel["วันที่เริ่ม"] <= day) &
+                            (df_travel["วันที่สิ้นสุด"] >= day)
+                        ].empty
+                    )
 
+                    if is_on_leave or is_on_travel:
+                        continue
+
+                    att_record = df_month[
+                        (df_month[name_col] == name) &
+                        (df_month['วันที่'].dt.date == day.date())
+                    ]
+
+                    status = ""
                     if att_record.empty:
                         status = "ขาดงาน"
                     else:
                         time_val = att_record.iloc[0].get("เวลาเข้า")
                         t_in = None
+
                         if time_val:
                             if isinstance(time_val, dt.time):
                                 t_in = time_val
@@ -432,27 +532,42 @@ elif menu == "📊 Dashboard":
                                 parsed_dt = pd.to_datetime(str(time_val), errors='coerce')
                                 if pd.notna(parsed_dt):
                                     t_in = parsed_dt.time()
-                        
+
                         if not t_in:
                             status = "ขาดงาน"
                         elif t_in > WORK_START:
                             status = "มาสาย"
-                    
+
                     if status:
                         records.append({"ชื่อพนักงาน": name, "สถานะ": status})
 
             if records:
                 df_issues = pd.DataFrame(records)
-                top_issues = df_issues['ชื่อพนักงาน'].value_counts().nlargest(5).reset_index()
+                top_issues = (
+                    df_issues['ชื่อพนักงาน']
+                    .value_counts()
+                    .nlargest(5)
+                    .reset_index()
+                )
                 top_issues.columns = ['ชื่อพนักงาน', 'จำนวนครั้ง']
-                chart_top_issues = alt.Chart(top_issues).mark_bar(color='indianred').encode(
-                    x=alt.X('จำนวนครั้ง:Q', title='จำนวนครั้ง (สาย/ขาด)'),
-                    y=alt.Y('ชื่อพนักงาน:N', sort='-x', title='ชื่อพนักงาน'),
-                    tooltip=['ชื่อพนักงาน', 'จำนวนครั้ง']
-                ).properties(height=300)
+
+                chart_top_issues = (
+                    alt.Chart(top_issues)
+                    .mark_bar(color="#EF4444")
+                    .encode(
+                        x=alt.X('จำนวนครั้ง:Q', title='Counts (Late/Absent)'),
+                        y=alt.Y('ชื่อพนักงาน:N', sort='-x', title='Employee'),
+                        tooltip=['ชื่อพนักงาน', 'จำนวนครั้ง']
+                    )
+                    .properties(height=300)
+                )
                 st.altair_chart(chart_top_issues, use_container_width=True)
             else:
-                st.info("ไม่พบข้อมูลการมาสายหรือขาดงานในเดือนล่าสุด")
+                st.info("✅ ไม่พบข้อมูลการมาสายหรือขาดงานในเดือนล่าสุด")
+        else:
+            st.info("⚠️ ไม่พบคอลัมน์ชื่อพนักงาน หรือเดือนล่าสุดไม่ถูกต้อง")
+    else:
+        st.info("⚠️ ไม่มีข้อมูลการสแกน (Attendance Data) ให้วิเคราะห์")
 
 # ===========================
 # 📅 การมาปฏิบัติงาน
@@ -741,6 +856,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
