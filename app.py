@@ -717,26 +717,56 @@ elif menu == "📅 การมาปฏิบัติงาน":
                 return colors[key]
         return ""
 
-    st.markdown("### 📋 ตารางสรุปสถานะรายวัน")
-    st.dataframe(df_daily.style.applymap(color_status, subset=["สถานะ"]), use_container_width=True, height=600)
+    # ... (โค้ดส่วนก่อนหน้า จนถึง st.dataframe(df_daily...) จบส่วนรายวัน) ...
 
     st.markdown("---")
     st.subheader("📊 สรุปสถิติรวมต่อเดือนต่อคน")
 
+    # 1. สร้างคอลัมน์ "สถานะย่อ" ก่อน (ต้องทำตรงนี้ก่อน ถึงจะเรียกใช้ได้)
     def simplify_status(s):
-        return "ลา" if isinstance(s, str) and s.startswith("ลา") else s
+        if isinstance(s, str) and s.startswith("ลา"):
+            return "ลา"
+        return s
+    
+    # สร้างคอลัมน์ใหม่ลงใน DataFrame
     df_daily["สถานะย่อ"] = df_daily["สถานะ"].apply(simplify_status)
 
-    summary = df_daily.pivot_table(index="ชื่อพนักงาน", columns="สถานะย่อ", aggfunc="size", fill_value=0).reset_index()
+    # 2. ทำ Pivot Table (ตารางสรุป)
+    summary = df_daily.pivot_table(index="ชื่อพนักงาน", columns="สถานะย่อ", aggfunc="size", fill_value=0)
+
+    # 3. 🛠️ บังคับให้แสดงคอลัมน์ให้ครบ (แก้ปัญหาคอลัมน์หายเมื่อไม่มีข้อมูล)
+    # รายชื่อคอลัมน์ที่อยากให้โชว์เสมอ
+    required_cols = ["มาปกติ", "มาสาย", "ออกก่อน", "มาสายและออกก่อน", "ลา", "ไปราชการ", "วันหยุด", "ขาดงาน"]
+    
+    for col in required_cols:
+        if col not in summary.columns:
+            summary[col] = 0  # ถ้าไม่มีคอลัมน์ไหน ให้สร้างขึ้นมาแล้วใส่ค่า 0
+
+    # จัดเรียงลำดับคอลัมน์ให้สวยงามตามลำดับใน required_cols
+    # (ใช้ list intersection เพื่อกันกรณีมีสถานะแปลกๆ ที่ไม่อยู่ใน list)
+    existing_cols = [c for c in required_cols if c in summary.columns]
+    other_cols = [c for c in summary.columns if c not in required_cols]
+    summary = summary[existing_cols + other_cols]
+
+    # 4. รีเซ็ต index เพื่อให้ชื่อพนักงานกลับมาเป็นคอลัมน์ปกติ
+    summary = summary.reset_index()
+
+    # แสดงผลตารางสรุป
     st.dataframe(summary, use_container_width=True)
 
+    # 5. ส่วนดาวน์โหลด Excel
     excel_output = io.BytesIO()
     with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
         df_daily.to_excel(writer, index=False, sheet_name="รายวัน")
         summary.to_excel(writer, index=False, sheet_name="สรุปสถิติรวม")
     excel_output.seek(0)
-    st.download_button("📥 ดาวน์โหลดรายงานสรุป (รายวัน + รวมต่อเดือน)", data=excel_output, file_name=f"รายงานสรุป_{selected_month}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
+    
+    st.download_button(
+        label="📥 ดาวน์โหลดรายงานสรุป (รายวัน + รวมต่อเดือน)", 
+        data=excel_output, 
+        file_name=f"รายงานสรุป_{selected_month}.xlsx", 
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 # ----------------------------
 # 🧭 การไปราชการ
 # ----------------------------
@@ -904,6 +934,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
