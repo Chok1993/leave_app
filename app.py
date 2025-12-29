@@ -722,6 +722,7 @@ elif menu == "📅 การมาปฏิบัติงาน":
 
     st.markdown("---")
     st.subheader("📊 สรุปสถิติรวมต่อเดือนต่อคน")
+    st.write("ตรวจสอบข้อมูลดิบ (สถานะทั้งหมดที่พบ):", df_daily["สถานะย่อ"].unique())
 
     def simplify_status(s):
         return "ลา" if isinstance(s, str) and s.startswith("ลา") else s
@@ -904,6 +905,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
