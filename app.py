@@ -197,8 +197,7 @@ df_leave = read_excel_from_drive(FILE_LEAVE)
 
 # Normalize วันที่ในไฟล์ลา
 if not df_leave.empty:
-    df_leave["วันที่เริ่ม"] = pd.to_datetime(df_leave["วันที่เริ่ม"]).dt.normalize()
-    df_leave["วันที่สิ้นสุด"] = pd.to_datetime(df_leave["วันที่สิ้นสุด"]).dt.normalize()
+    df_leave["วันที่เริ่ม"] = pd.to_datetime(df_leave["วันที่เริ่ม"], errors='coerce').dt.normalize()    df_leave["วันที่สิ้นสุด"] = pd.to_datetime(df_leave["วันที่สิ้นสุด"], errors='coerce').dt.normalize()
 df_travel = read_excel_from_drive(FILE_TRAVEL)
 
 # ป้องกัน NoneType
@@ -940,6 +939,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
