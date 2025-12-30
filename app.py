@@ -194,6 +194,11 @@ def upload_pdf_to_drive(uploaded_file, new_filename, folder_id):
 # ====================================================
 df_att = read_excel_from_drive(FILE_ATTEND)
 df_leave = read_excel_from_drive(FILE_LEAVE)
+
+# Normalize วันที่ในไฟล์ลา
+if not df_leave.empty:
+    df_leave["วันที่เริ่ม"] = pd.to_datetime(df_leave["วันที่เริ่ม"]).dt.normalize()
+    df_leave["วันที่สิ้นสุด"] = pd.to_datetime(df_leave["วันที่สิ้นสุด"]).dt.normalize()
 df_travel = read_excel_from_drive(FILE_TRAVEL)
 
 # ป้องกัน NoneType
@@ -623,6 +628,7 @@ elif menu == "📅 การมาปฏิบัติงาน":
     month_start = pd.to_datetime(selected_month + "-01")
     month_end = (month_start + pd.offsets.MonthEnd(0))
     date_range = pd.date_range(month_start, month_end, freq="D")
+        date_range = date_range.normalize()  # ตัดเวลาออกเหลือแค่วันที่
 
     records = []
     names_to_process = selected_names if selected_names else all_names_union
@@ -934,6 +940,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
