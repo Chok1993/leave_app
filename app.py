@@ -1,88 +1,113 @@
 # ====================================================
 # 📋 โปรแกรมติดตามการลาและไปราชการ (สคร.9)
-# ✅ Final Stable Build - พร้อมใช้งานจริง (Leave_App_Data)
+# ✅ Final Complete Build - Fully Debugged
 # ====================================================
 
 import io
-import mimetypes
-import altair as alt
 import datetime as dt
 import pandas as pd
 import numpy as np
+import altair as alt
 import streamlit as st
-import re # ## ---> ADDED THIS
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 # ===========================
-# 🔐 Auth & App Config
+# 🔐 1. System Configuration & Auth
 # ===========================
-st.set_page_config(page_title="สคร.9 - ติดตามการลา/ราชการ/สแกน", layout="wide")
-
-creds = service_account.Credentials.from_service_account_info(
-    st.secrets["gcp_service_account"],
-    scopes=["https://www.googleapis.com/auth/drive"]
+st.set_page_config(
+    page_title="สคร.9 - ระบบติดตามการปฏิบัติงาน",
+    page_icon="📋",
+    layout="wide"
 )
-service = build("drive", "v3", credentials=creds)
+
+# ตรวจสอบ Secrets เพื่อป้องกัน App Crash หากไม่ได้ตั้งค่า
+if "gcp_service_account" not in st.secrets:
+    st.error("❌ Critical Error: ไม่พบข้อมูล 'gcp_service_account' ใน secrets.toml")
+    st.stop()
+
+# เชื่อมต่อ Google Drive API
+try:
+    creds = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    service = build("drive", "v3", credentials=creds)
+except Exception as e:
+    st.error(f"❌ Connection Error: ไม่สามารถเชื่อมต่อ Google Drive ได้ ({e})")
+    st.stop()
+
 ADMIN_PASSWORD = st.secrets.get("admin_password", "admin123")
 
 # ===========================
-# 🗂️ Google Drive Config
+# 🗂️ 2. Constants & Drive Config
 # ===========================
-FOLDER_ID = "1YFJZvs59ahRHmlRrKcQwepWJz6A-4B7d"  # Leave_App_Data
+FOLDER_ID = "1YFJZvs59ahRHmlRrKcQwepWJz6A-4B7d"  # Folder หลัก (Leave_App_Data)
 FILE_ATTEND = "attendance_report.xlsx"
 FILE_LEAVE  = "leave_report.xlsx"
 FILE_TRAVEL = "travel_report.xlsx"
-## ---> START: ADDED THIS SECTION
-ATTACHMENT_FOLDER_NAME = "Attachments_Leave_App" # ชื่อโฟลเดอร์สำหรับเก็บไฟล์แนบ
-## ---> END: ADDED THIS SECTION
+ATTACHMENT_FOLDER_NAME = "Attachments_Leave_App"
+
+# รายชื่อกลุ่มงาน
+STAFF_GROUPS = [
+    "กลุ่มบริหารทั่วไป", "กลุ่มบริหารทั่วไป (งานธุรการ)", "กลุ่มบริหารทั่วไป (งานการเงินและบัญชี)",
+    "กลุ่มบริหารทั่วไป (งานการเจ้าหน้าที่)", "กลุ่มบริหารทั่วไป (งานพัสดุและยานพาหนะ (งานพัสดุ))",
+    "กลุ่มบริหารทั่วไป (งานพัสดุและยานพาหนะ (งานยานพาหนะ))", "กลุ่มบริหารทั่วไป (งานพัสดุและยานพาหนะ (งานอาคารสถานที่))",
+    "กลุ่มยุทธศาสตร์และแผนงาน", "กลุ่มระบาดวิทยาและตอบโต้ภาวะฉุกเฉินทางสาธารณสุข",
+    "กลุ่มโรคติดต่อ", "กลุ่มโรคไม่ติดต่อ", "กลุ่มโรคติดต่อเรื้อรัง", "กลุ่มโรคติดต่อนำโดยแมลง",
+    "กลุ่มโรคติดต่อนำโดยแมลง (ศตม. 9.1 จ.ชัยภูมิ)", "กลุ่มโรคติดต่อนำโดยแมลง (ศตม. 9.2 จ.บุรีรัมย์)",
+    "กลุ่มโรคติดต่อนำโดยแมลง (ศตม. 9.3 จ.สุรินทร์)", "กลุ่มโรคติดต่อนำโดยแมลง (ศตม. 9.4 อ.ปากช่อง)",
+    "กลุ่มโรคจากการประกอบอาชีพและสิ่งแวดล้อม", "กลุ่มห้องปฏิบัติการทางการแพทย์ด้านควบคุมโรค",
+    "กลุ่มสื่อสารความเสี่ยงโรคและภัยสุขภาพ", "กลุ่มพัฒนานวัตกรรมและวิจัย", "กลุ่มพัฒนาองค์กร",
+    "ศูนย์ฝึกอบรมนักระบาดวิทยาภาคสนาม", "ศูนย์บริการเวชศาสตร์ป้องกัน", "งานกฎหมาย",
+    "งานเภสัชกรรม", "ด่านควบคุมโรคติดต่อระหว่างประเทศ", "อื่นๆ"
+]
+
+LEAVE_TYPES = ["ลาป่วย", "ลากิจส่วนตัว", "ลาพักผ่อน", "ลาคลอดบุตร", "ลาอุปสมบท", "ลาช่วยเหลือภริยาที่คลอดบุตร"]
 
 # ===========================
-# 🔧 Helper Functions
+# 🔧 3. Helper Functions (Core Logic)
 # ===========================
-def list_files_in_folder(folder_id):
-    """แสดงรายชื่อไฟล์ในโฟลเดอร์ เพื่อเช็กว่าระบบมองเห็นไฟล์ไหม"""
-    try:
-        results = service.files().list(
-            q=f"'{folder_id}' in parents and trashed=false",
-            fields="files(id, name)",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True
-        ).execute()
-        files = results.get("files", [])
-        if not files:
-            st.warning("⚠️ ไม่พบไฟล์ในโฟลเดอร์นี้เลย")
-        else:
-            st.info("📂 รายชื่อไฟล์ในโฟลเดอร์:")
-            for f in files:
-                st.write(f"✅ {f['name']}")
-    except Exception as e:
-        st.error(f"❌ ไม่สามารถอ่านรายชื่อไฟล์จาก Drive ได้: {e}")
 
 def get_file_id(filename: str, parent_id=FOLDER_ID):
-    """ค้นหาไฟล์ใน Google Drive ตามชื่อ"""
-    q = f"name='{filename}' and '{parent_id}' in parents and trashed=false"
-    res = service.files().list(
-        q=q,
-        fields="files(id, name)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
-    files = res.get("files", [])
-    return files[0]["id"] if files else None
-
-@st.cache_data(ttl=600)
-def read_excel_from_drive(filename: str) -> pd.DataFrame:
-    """อ่านไฟล์ Excel จาก Google Drive"""
+    """ค้นหา File ID จาก Google Drive"""
     try:
-        file_id = get_file_id(filename)
-        if not file_id:
-            st.warning(f"⚠️ ไม่พบไฟล์ '{filename}' ใน Drive กรุณาตรวจสอบชื่อไฟล์")
-            list_files_in_folder(FOLDER_ID)
-            return pd.DataFrame()
+        q = f"name='{filename}' and '{parent_id}' in parents and trashed=false"
+        res = service.files().list(
+            q=q, fields="files(id, name)", supportsAllDrives=True, includeItemsFromAllDrives=True
+        ).execute()
+        files = res.get("files", [])
+        return files[0]["id"] if files else None
+    except Exception as e:
+        st.sidebar.error(f"Error finding file {filename}: {e}")
+        return None
 
+def get_or_create_folder(folder_name: str, parent_id: str):
+    """ค้นหาโฟลเดอร์เก็บไฟล์แนบ ถ้าไม่มีให้สร้างใหม่"""
+    try:
+        q = f"name='{folder_name}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        res = service.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+        folder = res.get("files", [])
+        if folder:
+            return folder[0]["id"]
+        else:
+            file_metadata = {'name': folder_name, 'parents': [parent_id], 'mimeType': 'application/vnd.google-apps.folder'}
+            new_folder = service.files().create(body=file_metadata, supportsAllDrives=True, fields='id').execute()
+            return new_folder.get('id')
+    except Exception as e:
+        st.error(f"Error creating folder: {e}")
+        return None
+
+@st.cache_data(ttl=300)
+def read_excel_from_drive(filename: str) -> pd.DataFrame:
+    """อ่านไฟล์ Excel จาก Drive พร้อม Error Handling"""
+    file_id = get_file_id(filename)
+    if not file_id:
+        return pd.DataFrame()
+    
+    try:
         req = service.files().get_media(fileId=file_id, supportsAllDrives=True)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, req)
@@ -90,62 +115,41 @@ def read_excel_from_drive(filename: str) -> pd.DataFrame:
         while not done:
             _, done = downloader.next_chunk()
         fh.seek(0)
+        
+        # อ่านไฟล์และจัดการ Header
+        try:
+            df = pd.read_excel(fh, engine="openpyxl")
+        except:
+            return pd.DataFrame()
 
-        xls = pd.ExcelFile(fh, engine="openpyxl")
-        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
-        if df.empty:
-            st.warning(f"⚠️ ไฟล์ '{filename}' ไม่มีข้อมูล")
         return df
-
     except Exception as e:
-        st.error(f"❌ อ่านไฟล์ {filename} ไม่สำเร็จ: {e}")
+        st.error(f"Error reading {filename}: {e}")
         return pd.DataFrame()
 
-## ---> START: ADDED THIS SECTION
-def count_weekdays(start_date, end_date):
-    """นับจำนวนวันทำการ (จันทร์-ศุกร์) ระหว่าง 2 วันที่"""
-    if start_date is None or end_date is None:
-        return 0
-    if isinstance(start_date, dt.datetime):
-        start_date = start_date.date()
-    if isinstance(end_date, dt.datetime):
-        end_date = end_date.date()
-    return np.busday_count(start_date, end_date + dt.timedelta(days=1))
-
 def write_excel_to_drive(filename: str, df: pd.DataFrame):
-    """เขียน DataFrame ลงในไฟล์ Excel บน Google Drive (เขียนทับไฟล์เดิม)"""
+    """บันทึกไฟล์ลง Drive (Update หรือ Create)"""
     try:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            df.to_excel(writer, index=False, sheet_name="Data")
+            df.to_excel(writer, index=False)
         output.seek(0)
 
         file_id = get_file_id(filename)
         media = MediaIoBaseUpload(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
         if file_id:
-            service.files().update(
-                fileId=file_id,
-                media_body=media,
-                supportsAllDrives=True
-            ).execute()
-        else: # ถ้าไฟล์ไม่มีอยู่ ให้สร้างใหม่
-            file_metadata = {
-                "name": filename,
-                "parents": [FOLDER_ID]
-            }
-            service.files().create(
-                body=file_metadata,
-                media_body=media,
-                supportsAllDrives=True,
-                fields="id"
-            ).execute()
-        st.cache_data.clear() # ล้าง cache ทุกครั้งหลังเขียนไฟล์
+            service.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
+        else:
+            file_metadata = {"name": filename, "parents": [FOLDER_ID]}
+            service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True).execute()
+        
+        st.cache_data.clear() # Clear Cache เพื่อให้ข้อมูลใหม่แสดงผลทันที
     except Exception as e:
-        st.error(f"❌ บันทึกไฟล์ {filename} ไม่สำเร็จ: {e}")
+        st.error(f"Error saving file: {e}")
 
 def backup_excel(filename: str, current_df: pd.DataFrame):
-    """สร้างไฟล์สำรอง (backup) ก่อนที่จะเขียนทับ"""
+    """สำรองไฟล์ก่อนแก้ไข"""
     if current_df.empty: return
     try:
         file_id = get_file_id(filename)
@@ -157,804 +161,434 @@ def backup_excel(filename: str, current_df: pd.DataFrame):
                 body={"name": backup_name, "parents": [FOLDER_ID]},
                 supportsAllDrives=True
             ).execute()
-    except Exception as e:
-        st.warning(f"⚠️ ไม่สามารถสร้างไฟล์สำรองได้: {e}")
-
-def get_or_create_folder(folder_name: str, parent_id: str):
-    """ค้นหาโฟลเดอร์ ถ้าไม่เจอก็สร้างใหม่"""
-    q = f"name='{folder_name}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    res = service.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-    folder = res.get("files", [])
-    if folder:
-        return folder[0]["id"]
-    else:
-        file_metadata = {'name': folder_name, 'parents': [parent_id], 'mimeType': 'application/vnd.google-apps.folder'}
-        new_folder = service.files().create(body=file_metadata, supportsAllDrives=True, fields='id').execute()
-        return new_folder.get('id')
+    except Exception:
+        pass # Backup failed, but we continue
 
 def upload_pdf_to_drive(uploaded_file, new_filename, folder_id):
-    """อัปโหลดไฟล์ PDF ไปยัง Drive และคืนค่าเป็น Link"""
+    """อัปโหลดไฟล์ PDF"""
     try:
         file_metadata = {'name': new_filename, 'parents': [folder_id]}
         media = MediaIoBaseUpload(io.BytesIO(uploaded_file.getvalue()), mimetype='application/pdf', resumable=True)
         created_file = service.files().create(body=file_metadata, media_body=media, supportsAllDrives=True, fields='id, webViewLink').execute()
-
+        
+        # แชร์ให้ทุกคนที่มีลิงก์ดูได้
         file_id = created_file.get('id')
-        permission = {'type': 'anyone', 'role': 'reader'}
-        service.permissions().create(fileId=file_id, body=permission, supportsAllDrives=True).execute()
-
+        service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}, supportsAllDrives=True).execute()
+        
         return created_file.get('webViewLink')
     except Exception as e:
-        st.error(f"❌ อัปโหลดไฟล์ไม่สำเร็จ: {e}")
+        st.error(f"Upload failed: {e}")
         return "-"
-## ---> END: ADDED THIS SECTION
 
-# ====================================================
-# 📥 Load Data
-# ====================================================
+def count_weekdays(start_date, end_date):
+    """นับวันทำการ (จ-ศ)"""
+    if not start_date or not end_date: return 0
+    if isinstance(start_date, dt.datetime): start_date = start_date.date()
+    if isinstance(end_date, dt.datetime): end_date = end_date.date()
+    return np.busday_count(start_date, end_date + dt.timedelta(days=1))
+
+# ===========================
+# 📥 4. Data Loading & Cleaning
+# ===========================
 df_att = read_excel_from_drive(FILE_ATTEND)
 df_leave = read_excel_from_drive(FILE_LEAVE)
-
-# Normalize วันที่ในไฟล์ลา
-if not df_leave.empty:
-    df_leave["วันที่เริ่ม"] = pd.to_datetime(df_leave["วันที่เริ่ม"], errors='coerce').dt.normalize()
-    df_leave["วันที่สิ้นสุด"] = pd.to_datetime(df_leave["วันที่สิ้นสุด"], errors='coerce').dt.normalize()
 df_travel = read_excel_from_drive(FILE_TRAVEL)
 
-# ป้องกัน NoneType
-df_att = df_att if isinstance(df_att, pd.DataFrame) else pd.DataFrame()
-df_leave = df_leave if isinstance(df_leave, pd.DataFrame) else pd.DataFrame()
-df_travel = df_travel if isinstance(df_travel, pd.DataFrame) else pd.DataFrame()
+# --- Preprocessing & Normalization (จุดสำคัญป้องกัน Bug) ---
+# 1. จัดการวันที่ให้เป็น Datetime เสมอ และ Normalize เป็น 00:00:00
+def normalize_date_col(df, col_name):
+    if col_name in df.columns:
+        df[col_name] = pd.to_datetime(df[col_name], errors='coerce').dt.normalize()
+    return df
 
-# ====================================================
-# 👥 รวมรายชื่อบุคลากร (แก้ไข TypeError)
-# ====================================================
-name_col_att = next((col for col in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if col in df_att.columns), None)
-all_names_leave = set(df_leave["ชื่อ-สกุล"].dropna()) if "ชื่อ-สกุล" in df_leave.columns else set()
-all_names_travel = set(df_travel["ชื่อ-สกุล"].dropna()) if "ชื่อ-สกุล" in df_travel.columns else set()
-all_names_att = set(df_att[name_col_att].dropna()) if name_col_att else set()
+df_leave = normalize_date_col(df_leave, "วันที่เริ่ม")
+df_leave = normalize_date_col(df_leave, "วันที่สิ้นสุด")
+df_travel = normalize_date_col(df_travel, "วันที่เริ่ม")
+df_travel = normalize_date_col(df_travel, "วันที่สิ้นสุด")
+if not df_att.empty and "วันที่" in df_att.columns:
+    df_att = normalize_date_col(df_att, "วันที่")
 
-# ✅ แปลงทุกค่าก่อนเรียงลำดับ เพื่อป้องกัน TypeError ('<' not supported between str and int)
-all_names = sorted(map(str, set().union(all_names_leave, all_names_travel, all_names_att)))
+# 2. จัดการชื่อ (Trim spaces)
+def clean_names(df, col_name):
+    if col_name in df.columns:
+        df[col_name] = df[col_name].astype(str).str.strip()
+    return df
 
-## ---> START: ADDED THIS SECTION
-# ====================================================
-# ⚙️ ค่าตั้งต้น & Lists
-# ====================================================
-staff_groups = [
-    "กลุ่มบริหารทั่วไป",
-    "กลุ่มบริหารทั่วไป (งานธุรการ)",
-    "กลุ่มบริหารทั่วไป (งานการเงินและบัญชี)",
-    "กลุ่มบริหารทั่วไป (งานการเจ้าหน้าที่)",
-    "กลุ่มบริหารทั่วไป (งานพัสดุและยานพาหนะ (งานพัสดุ))",
-    "กลุ่มบริหารทั่วไป (งานพัสดุและยานพาหนะ (งานยานพาหนะ))",
-    "กลุ่มบริหารทั่วไป (งานพัสดุและยานพาหนะ (งานอาคารสถานที่))",
-    "กลุ่มยุทธศาสตร์และแผนงาน",
-    "กลุ่มระบาดวิทยาและตอบโต้ภาวะฉุกเฉินทางสาธารณสุข",
-    "กลุ่มโรคติดต่อ",
-    "กลุ่มโรคไม่ติดต่อ",
-    "กลุ่มโรคติดต่อเรื้อรัง",
-    "กลุ่มโรคติดต่อนำโดยแมลง",
-    "กลุ่มโรคติดต่อนำโดยแมลง (ศตม. 9.1 จ.ชัยภูมิ)",
-    "กลุ่มโรคติดต่อนำโดยแมลง (ศตม. 9.2 จ.บุรีรัมย์)",
-    "กลุ่มโรคติดต่อนำโดยแมลง (ศตม. 9.3 จ.สุรินทร์)",
-    "กลุ่มโรคติดต่อนำโดยแมลง (ศตม. 9.4 อ.ปากช่อง)",
-    "กลุ่มโรคจากการประกอบอาชีพและสิ่งแวดล้อม",
-    "กลุ่มห้องปฏิบัติการทางการแพทย์ด้านควบคุมโรค",
-    "กลุ่มสื่อสารความเสี่ยงโรคและภัยสุขภาพ",
-    "กลุ่มพัฒนานวัตกรรมและวิจัย",
-    "กลุ่มพัฒนาองค์กร",
-    "ศูนย์ฝึกอบรมนักระบาดวิทยาภาคสนาม",
-    "ศูนย์บริการเวชศาสตร์ป้องกัน",
-    "งานกฎหมาย",
-    "งานเภสัชกรรม",
-    "ด่านควบคุมโรคติดต่อระหว่างประเทศ",
-    "ด่านควบคุมโรคติดต่อระหว่างประเทศท่าอากาศยานบุรีรัมย์ จังหวัดบุรีรัมย์",
-    "ด่านควบคุมโรคติดต่อระหว่างประเทศช่องจอม อำเภอกาบเชิง จังหวัดสุรินทร์",
-    "อื่นๆ"
-]
+df_leave = clean_names(df_leave, "ชื่อ-สกุล")
+df_travel = clean_names(df_travel, "ชื่อ-สกุล")
+att_name_col = next((c for c in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if c in df_att.columns), "ชื่อพนักงาน")
+if not df_att.empty:
+    df_att = clean_names(df_att, att_name_col)
 
-leave_types = ["ลาป่วย", "ลากิจส่วนตัว", "ลาพักผ่อน", "ลาคลอดบุตร", "ลาอุปสมบท"]
-## ---> END: ADDED THIS SECTION
-
-# ====================================================
-# 🧭 Interface
-# ====================================================
-st.markdown("##### **สำนักงานป้องกันควบคุมโรคที่ 9 จังหวัดนครราชสีมา**")
-st.title("📋 ระบบติดตามการลา ไปราชการ และการปฏิบัติงาน")
-
-# ==============================================
-# 🧩 ฟังก์ชันโหลดข้อมูลใหม่ + ตรวจ header อัตโนมัติ
-# ==============================================
-def load_all_data(force_refresh=False):
-    """โหลดข้อมูลจากไฟล์ใน Drive ทั้งหมด"""
-    if force_refresh:
-        st.cache_data.clear()
-
-    def read_smart_excel(filename):
-        try:
-            file_id = get_file_id(filename)
-            if not file_id:
-                st.warning(f"⚠️ ไม่พบไฟล์ {filename}")
-                return pd.DataFrame()
-
-            req = service.files().get_media(fileId=file_id, supportsAllDrives=True)
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, req)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-            fh.seek(0)
-
-            # ลองอ่าน 2 แบบ
-            try:
-                df = pd.read_excel(fh, engine="openpyxl", header=0)
-            except Exception:
-                fh.seek(0)
-                df = pd.read_excel(fh, engine="openpyxl", header=1)
-
-            df = df.dropna(how="all")  # ตัดแถวว่างทั้งหมด
-            return df
-        except Exception as e:
-            st.error(f"อ่านไฟล์ {filename} ไม่ได้: {e}")
-            return pd.DataFrame()
-
-    df_scan = read_smart_excel(FILE_ATTEND)
-    df_leave = read_smart_excel(FILE_LEAVE)
-    df_travel = read_smart_excel(FILE_TRAVEL)
-
-    return df_scan, df_leave, df_travel
-
-menu = st.sidebar.radio("เลือกเมนู", ["หน้าหลัก", "📊 Dashboard", "📅 การมาปฏิบัติงาน", "🧭 การไปราชการ", "🕒 การลา", "🧑‍💼 ผู้ดูแลระบบ"])
+# 3. รวมรายชื่อบุคลากรทั้งหมด
+all_names = set()
+if not df_leave.empty: all_names.update(df_leave["ชื่อ-สกุล"].unique())
+if not df_travel.empty: all_names.update(df_travel["ชื่อ-สกุล"].unique())
+if not df_att.empty: all_names.update(df_att[att_name_col].unique())
+ALL_NAMES_SORTED = sorted([n for n in all_names if n and n.lower() != 'nan'])
 
 # ===========================
+# 🖥️ 5. UI & Main Logic
+# ===========================
+st.markdown("### 🏥 ระบบติดตามการลา ไปราชการ และการปฏิบัติงาน (สคร.9)")
+menu = st.sidebar.radio("📌 เมนูใช้งาน", ["หน้าหลัก", "📊 Dashboard", "📅 ตรวจสอบการมาปฏิบัติงาน", "🧭 บันทึกไปราชการ", "🕒 บันทึกการลา", "⚙️ ผู้ดูแลระบบ"])
+
+# ---------------------------
 # 🏠 หน้าหลัก
-# ===========================
+# ---------------------------
 if menu == "หน้าหลัก":
-    st.info("💡 ระบบนี้ใช้สำหรับบันทึกและสรุปข้อมูลบุคลากรใน สคร.9\n"
-            "ได้แก่ การลา การไปราชการ และการมาปฏิบัติงาน พร้อมแนบไฟล์เอกสาร PDF ได้โดยตรง")
-    st.image("https://ddc.moph.go.th/uploads/files/11120210817094038.jpg", caption="สำนักงานป้องกันควบคุมโรคที่ 9 นครราชสีมา", use_container_width=True)
+    st.info("👋 ยินดีต้อนรับเข้าสู่ระบบ HR Tracking System")
+    st.markdown("""
+    **ระบบนี้รองรับการทำงานดังนี้:**
+    * ✅ **บันทึกการลา:** ลาป่วย, ลากิจ, ลาพักผ่อน พร้อมแนบไฟล์ PDF
+    * ✅ **บันทึกไปราชการ:** บันทึกแบบรายบุคคลหรือหมู่คณะ พร้อมคำนวณวันทำการ
+    * ✅ **ติดตามการมาปฏิบัติงาน:** ตรวจสอบข้อมูลสแกนนิ้ว เปรียบเทียบกับการลาและไปราชการ
+    * ✅ **Dashboard:** ดูภาพรวมสถิติของหน่วยงาน
+    """)
+    st.image("https://ddc.moph.go.th/uploads/files/11120210817094038.jpg", use_container_width=True)
 
-# ===========================
-# 📊 Dashboard (Modern UI)
-# ===========================
+# ---------------------------
+# 📊 Dashboard
+# ---------------------------
 elif menu == "📊 Dashboard":
-    st.header("📊 HR Dashboard – Overview & Insights")
-    st.caption("ภาพรวมการเดินทางราชการ • การลา • การสแกนเข้าออกงาน (Travel • Leave • Attendance)")
-
-    # ---------- Overview Cards ----------
-    st.markdown("### 🔎 Overview Summary")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric(
-            label="เดินทางราชการ (ครั้ง) | Business Trips",
-            value=len(df_travel)
-        )
-    with col2:
-        st.metric(
-            label="การลา (ครั้ง) | Leave Records",
-            value=len(df_leave)
-        )
-    with col3:
-        st.metric(
-            label="ข้อมูลสแกน (แถว) | Attendance Rows",
-            value=len(df_att)
-        )
-
-    st.markdown("---")
-
-    # ---------- Analytical Views ----------
-    st.markdown("### 📈 Key Analytics")
+    st.header("📊 สรุปภาพรวมบุคลากร")
+    
+    # KPIs
+    c1, c2, c3 = st.columns(3)
+    with c1: st.metric("📋 จำนวนครั้งการลา", len(df_leave))
+    with c2: st.metric("🚗 จำนวนครั้งไปราชการ", len(df_travel))
+    with c3: st.metric("fingerprint ข้อมูลสแกน (รายการ)", len(df_att))
+    
+    st.divider()
+    
     col_chart1, col_chart2 = st.columns(2)
-
-    # การลาแยกตามกลุ่มงาน
+    
+    # Chart 1: Leave by Group
     with col_chart1:
-        st.markdown("#### Leave by Division (การลาแยกตามกลุ่มงาน)")
-        if not df_leave.empty and 'กลุ่มงาน' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
-            df_leave['จำนวนวันลา'] = pd.to_numeric(df_leave['จำนวนวันลา'], errors='coerce')
-            leave_by_group = (
-                df_leave
-                .dropna(subset=['กลุ่มงาน', 'จำนวนวันลา'])
-                .groupby('กลุ่มงาน', as_index=False)['จำนวนวันลา']
-                .sum()
-                .sort_values('จำนวนวันลา', ascending=False)
-            )
-            chart_leave_group = (
-                alt.Chart(leave_by_group)
-                .mark_bar(color="#4F46E5")
-                .encode(
-                    x=alt.X('จำนวนวันลา:Q', title='Total Leave Days'),
-                    y=alt.Y('กลุ่มงาน:N', sort='-x', title='กลุ่มงาน (Division)'),
-                    tooltip=['กลุ่มงาน', 'จำนวนวันลา']
-                )
-                .properties(height=300)
-            )
-            st.altair_chart(chart_leave_group, use_container_width=True)
+        st.subheader("สถิติวันลาแยกตามกลุ่มงาน")
+        if not df_leave.empty and "กลุ่มงาน" in df_leave.columns:
+            df_chart_leave = df_leave.groupby("กลุ่มงาน", as_index=False)["จำนวนวันลา"].sum().sort_values("จำนวนวันลา", ascending=False)
+            chart = alt.Chart(df_chart_leave).mark_bar().encode(
+                x=alt.X("จำนวนวันลา", title="รวมจำนวนวันลา"),
+                y=alt.Y("กลุ่มงาน", sort="-x", title=""),
+                color=alt.value("#6366f1"),
+                tooltip=["กลุ่มงาน", "จำนวนวันลา"]
+            ).properties(height=350)
+            st.altair_chart(chart, use_container_width=True)
         else:
-            st.info("⚠️ ไม่มีข้อมูลการลาเพียงพอสำหรับแสดงตามกลุ่มงาน")
+            st.info("ไม่มีข้อมูลการลา")
 
-    # ผู้เดินทางราชการบ่อยที่สุด
+    # Chart 2: Top Travelers
     with col_chart2:
-        st.markdown("#### Top 5 Frequent Travelers (ผู้เดินทางราชการบ่อยที่สุด)")
-        if not df_travel.empty and 'ชื่อ-สกุล' in df_travel.columns:
-            top_travelers = (
-                df_travel['ชื่อ-สกุล']
-                .value_counts()
-                .nlargest(5)
-                .reset_index()
-            )
-            top_travelers.columns = ['ชื่อ-สกุล', 'จำนวนครั้ง']
-
-            chart_top_travel = (
-                alt.Chart(top_travelers)
-                .mark_bar(color="#0EA5E9")
-                .encode(
-                    x=alt.X('จำนวนครั้ง:Q', title='Number of Trips'),
-                    y=alt.Y('ชื่อ-สกุล:N', sort='-x', title='ชื่อ-สกุล (Name)'),
-                    tooltip=['ชื่อ-สกุล', 'จำนวนครั้ง']
-                )
-                .properties(height=300)
-            )
-            st.altair_chart(chart_top_travel, use_container_width=True)
+        st.subheader("ผู้ที่ไปราชการบ่อยที่สุด (5 อันดับ)")
+        if not df_travel.empty and "ชื่อ-สกุล" in df_travel.columns:
+            df_chart_travel = df_travel["ชื่อ-สกุล"].value_counts().nlargest(5).reset_index()
+            df_chart_travel.columns = ["ชื่อ-สกุล", "จำนวนครั้ง"]
+            chart2 = alt.Chart(df_chart_travel).mark_bar().encode(
+                x=alt.X("จำนวนครั้ง", title="จำนวนครั้ง"),
+                y=alt.Y("ชื่อ-สกุล", sort="-x", title=""),
+                color=alt.value("#0ea5e9"),
+                tooltip=["ชื่อ-สกุล", "จำนวนครั้ง"]
+            ).properties(height=350)
+            st.altair_chart(chart2, use_container_width=True)
         else:
-            st.info("⚠️ ไม่มีข้อมูลเดินทางราชการเพียงพอสำหรับจัดอันดับ")
+            st.info("ไม่มีข้อมูลไปราชการ")
 
-    st.markdown("---")
-    st.markdown("### 🧩 HR Insights")
-
-    hr_col1, hr_col2 = st.columns(2)
-
-    # สัดส่วนประเภทการลา
-    with hr_col1:
-        st.markdown("#### Leave Type Distribution (สัดส่วนประเภทการลา)")
-        if not df_leave.empty and 'ประเภทการลา' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
-            df_leave['จำนวนวันลา'] = pd.to_numeric(df_leave['จำนวนวันลา'], errors='coerce')
-            df_leave_cleaned = df_leave.dropna(subset=['จำนวนวันลา'])
-
-            leave_type_dist = (
-                df_leave_cleaned
-                .groupby('ประเภทการลา', as_index=False)['จำนวนวันลา']
-                .sum()
-            )
-            chart_leave_type = (
-                alt.Chart(leave_type_dist)
-                .mark_arc(innerRadius=60)
-                .encode(
-                    theta=alt.Theta(field="จำนวนวันลา", type="quantitative", title="Total Leave Days"),
-                    color=alt.Color(field="ประเภทการลา", type="nominal", title="Leave Type"),
-                    tooltip=['ประเภทการลา', 'จำนวนวันลา']
-                )
-                .properties(height=300)
-            )
-            st.altair_chart(chart_leave_type, use_container_width=True)
-        else:
-            st.info("⚠️ ไม่มีข้อมูลประเภทการลาเพียงพอสำหรับแสดงสัดส่วน")
-
-    # แนวโน้มการลารายเดือน
-    with hr_col2:
-        st.markdown("#### Monthly Leave Trend (แนวโน้มการลารายเดือน)")
-        if not df_leave.empty and 'วันที่เริ่ม' in df_leave.columns and 'จำนวนวันลา' in df_leave.columns:
-            df_leave_copy = df_leave.copy()
-            df_leave_copy['วันที่เริ่ม'] = pd.to_datetime(df_leave_copy['วันที่เริ่ม'], errors='coerce')
-            df_leave_copy['จำนวนวันลา'] = pd.to_numeric(df_leave_copy['จำนวนวันลา'], errors='coerce')
-            df_leave_copy.dropna(subset=['วันที่เริ่ม', 'จำนวนวันลา'], inplace=True)
-
-            df_leave_copy['เดือน'] = df_leave_copy['วันที่เริ่ม'].dt.to_period('M').dt.to_timestamp()
-            monthly_leave = (
-                df_leave_copy
-                .groupby('เดือน', as_index=False)['จำนวนวันลา']
-                .sum()
-            )
-
-            chart_monthly_trend = (
-                alt.Chart(monthly_leave)
-                .mark_line(point=True, strokeWidth=3, color="#22C55E")
-                .encode(
-                    x=alt.X('เดือน:T', title='Month'),
-                    y=alt.Y('จำนวนวันลา:Q', title='Total Leave Days'),
-                    tooltip=['เดือน', 'จำนวนวันลา']
-                )
-                .properties(height=300)
-            )
-            st.altair_chart(chart_monthly_trend, use_container_width=True)
-        else:
-            st.info("⚠️ ไม่มีข้อมูลวันที่เริ่มการลาเพียงพอสำหรับแสดงแนวโน้มรายเดือน")
-
-    # ---------- Attendance Risk ----------
-    st.markdown("### 🚨 Attendance Risk – Top 5 (สาย/ขาด/ออกก่อนเวลา)")
-    st.caption("Top 5 พนักงานที่มาสายหรือขาดงานในเดือนล่าสุด (ยกเว้นวันที่ลา/ไปราชการ)")
-
-    if not df_att.empty:
-        df_att_copy = df_att.copy()
-        df_att_copy["วันที่"] = pd.to_datetime(df_att_copy["วันที่"], errors="coerce")
-
-        if not df_leave.empty:
-            df_leave['วันที่เริ่ม'] = pd.to_datetime(df_leave['วันที่เริ่ม'], errors='coerce')
-            df_leave['วันที่สิ้นสุด'] = pd.to_datetime(df_leave['วันที่สิ้นสุด'], errors='coerce')
-        if not df_travel.empty:
-            df_travel['วันที่เริ่ม'] = pd.to_datetime(df_travel['วันที่เริ่ม'], errors='coerce')
-            df_travel['วันที่สิ้นสุด'] = pd.to_datetime(df_travel['วันที่สิ้นสุด'], errors='coerce')
-
-        latest_month_str = df_att_copy["วันที่"].dt.strftime("%Y-%m").max()
-        df_month = df_att_copy[df_att_copy["วันที่"].dt.strftime("%Y-%m") == latest_month_str]
-
-        name_col = next((c for c in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if c in df_month.columns), None)
-
-        if name_col and latest_month_str:
-            records = []
-            WORK_START = dt.time(8, 30)
-
-            all_names_month = df_month[name_col].dropna().unique().tolist()
-            month_start = pd.to_datetime(latest_month_str)
-            all_days_in_month = pd.date_range(
-                start=month_start,
-                end=month_start + pd.offsets.MonthEnd(0),
-                freq='D'
-            )
-
-            for name in all_names_month:
-                for day in all_days_in_month:
-                    if day.weekday() >= 5:
-                        continue
-
-                    is_on_leave = (
-                        not df_leave.empty and
-                        not df_leave[
-                            (df_leave["ชื่อ-สกุล"] == name) &
-                            (df_leave["วันที่เริ่ม"] <= day) &
-                            (df_leave["วันที่สิ้นสุด"] >= day)
-                        ].empty
-                    )
-                    is_on_travel = (
-                        not df_travel.empty and
-                        not df_travel[
-                            (df_travel["ชื่อ-สกุล"] == name) &
-                            (df_travel["วันที่เริ่ม"] <= day) &
-                            (df_travel["วันที่สิ้นสุด"] >= day)
-                        ].empty
-                    )
-
-                    if is_on_leave or is_on_travel:
-                        continue
-
-                    att_record = df_month[
-                        (df_month[name_col] == name) &
-                        (df_month['วันที่'].dt.date == day.date())
-                    ]
-
-                    status = ""
-                    if att_record.empty:
-                        status = "ขาดงาน"
-                    else:
-                        time_val = att_record.iloc[0].get("เวลาเข้า")
-                        t_in = None
-
-                        if time_val:
-                            if isinstance(time_val, dt.time):
-                                t_in = time_val
-                            else:
-                                parsed_dt = pd.to_datetime(str(time_val), errors='coerce')
-                                if pd.notna(parsed_dt):
-                                    t_in = parsed_dt.time()
-
-                        if not t_in:
-                            status = "ขาดงาน"
-                        elif t_in > WORK_START:
-                            status = "มาสาย"
-
-                    if status:
-                        records.append({"ชื่อพนักงาน": name, "สถานะ": status})
-
-            if records:
-                df_issues = pd.DataFrame(records)
-                top_issues = (
-                    df_issues['ชื่อพนักงาน']
-                    .value_counts()
-                    .nlargest(5)
-                    .reset_index()
-                )
-                top_issues.columns = ['ชื่อพนักงาน', 'จำนวนครั้ง']
-
-                chart_top_issues = (
-                    alt.Chart(top_issues)
-                    .mark_bar(color="#EF4444")
-                    .encode(
-                        x=alt.X('จำนวนครั้ง:Q', title='Counts (Late/Absent)'),
-                        y=alt.Y('ชื่อพนักงาน:N', sort='-x', title='Employee'),
-                        tooltip=['ชื่อพนักงาน', 'จำนวนครั้ง']
-                    )
-                    .properties(height=300)
-                )
-                st.altair_chart(chart_top_issues, use_container_width=True)
-            else:
-                st.info("✅ ไม่พบข้อมูลการมาสายหรือขาดงานในเดือนล่าสุด")
-        else:
-            st.info("⚠️ ไม่พบคอลัมน์ชื่อพนักงาน หรือเดือนล่าสุดไม่ถูกต้อง")
-    else:
-        st.info("⚠️ ไม่มีข้อมูลการสแกน (Attendance Data) ให้วิเคราะห์")
-
-# ===========================
-# 📅 การมาปฏิบัติงาน
-# ===========================
-elif menu == "📅 การมาปฏิบัติงาน":
-    st.header("📅 สรุปการมาปฏิบัติงานรายวัน (ตรวจจากสแกน + ลา + ราชการ)")
-
+# ---------------------------
+# 📅 ตรวจสอบการมาปฏิบัติงาน (Complex Logic)
+# ---------------------------
+elif menu == "📅 ตรวจสอบการมาปฏิบัติงาน":
+    st.header("📅 รายงานการปฏิบัติงานรายบุคคล")
+    
     if df_att.empty:
-        st.warning("ยังไม่มีข้อมูลสแกนเข้า-ออกในระบบ")
-        st.stop()
-
-    # ✅ ตรวจสอบชื่อคอลัมน์บุคลากร
-    name_col = next((c for c in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if c in df_att.columns), None)
-    if not name_col:
-        st.error("⚠️ ไม่พบคอลัมน์ชื่อบุคลากร (เช่น 'ชื่อพนักงาน' หรือ 'ชื่อ-สกุล')")
-        st.stop()
-
-    # ---------------------------------------------------------
-    # 🛠️ ส่วนที่แก้ไข: แปลงวันที่ทั้งหมดให้เป็น 00:00:00 (Normalize)
-    # ---------------------------------------------------------
-    # 1. จัดการ df_att
-    df_att["วันที่"] = pd.to_datetime(df_att["วันที่"], errors="coerce").dt.normalize()
-    
-    # 2. จัดการ df_leave และ df_travel
-    for df in [df_leave, df_travel]:
-        # ตัดช่องว่างชื่อ (ถ้ามี)
-        if "ชื่อ-สกุล" in df.columns:
-             df["ชื่อ-สกุล"] = df["ชื่อ-สกุล"].astype(str).str.strip()
-             
-        for c in ["วันที่เริ่ม", "วันที่สิ้นสุด"]:
-            if c in df.columns:
-                # 🔥 ไฮไลท์: ใช้ .dt.normalize() เพื่อตัดเวลาทิ้ง เหลือแค่ YYYY-MM-DD 00:00:00
-                df[c] = pd.to_datetime(df[c], errors="coerce").dt.normalize()
-    # ---------------------------------------------------------
-
-    # ✅ สร้างคอลัมน์เดือน
-    df_att["เดือน"] = df_att["วันที่"].dt.strftime("%Y-%m")
-    months = sorted(df_att["เดือน"].dropna().unique())
-    selected_month = st.selectbox("เลือกเดือนที่ต้องการดู", months, index=len(months)-1)
-
-    # รวมรายชื่อทั้งหมด (ทั้งจากสแกน, ลา, ราชการ) เพื่อให้ครบถ้วน
-    all_names_union = sorted(list(set(df_att[name_col].astype(str).str.strip().unique()) | set(df_leave.get("ชื่อ-สกุล", [])) | set(df_travel.get("ชื่อ-สกุล", []))))
-    selected_names = st.multiselect("เลือกชื่อบุคลากร (ว่าง=ทุกคน)", all_names_union)
-    
-    df_month = df_att[df_att["เดือน"] == selected_month].copy()
-    # ตัดช่องว่างชื่อใน df_month ด้วยเพื่อความชัวร์
-    df_month[name_col] = df_month[name_col].astype(str).str.strip()
-
-    WORK_START = dt.time(8, 30)
-    WORK_END = dt.time(16, 30)
-    
-    # สร้างช่วงวันที่ในเดือนที่เลือก (d ใน loop นี้จะเป็น timestamp 00:00:00)
-    month_start = pd.to_datetime(selected_month + "-01")
-    month_end = (month_start + pd.offsets.MonthEnd(0))
-    date_range = pd.date_range(month_start, month_end, freq="D")
-    date_range = date_range.normalize()  # ตัดเวลาออกเหลือแค่วันที่
-
-    records = []
-    names_to_process = selected_names if selected_names else all_names_union
-
-    # Progress bar (เผื่อข้อมูลเยอะ)
-    prog = st.progress(0)
-
-    for i, name in enumerate(names_to_process):
-        prog.progress((i + 1) / len(names_to_process))
+        st.warning("⚠️ ยังไม่มีข้อมูลสแกนนิ้วในระบบ (ไฟล์ attendance_report.xlsx ว่างหรือไม่อยู่)")
+    else:
+        # Filter Settings
+        df_att["เดือน_str"] = df_att["วันที่"].dt.strftime("%Y-%m")
+        avail_months = sorted(df_att["เดือน_str"].dropna().unique())
         
-        for d in date_range:
-            rec = {"ชื่อพนักงาน": name, "วันที่": d.date(), "เวลาเข้า": "", "เวลาออก": "", "หมายเหตุ": "", "สถานะ": ""}
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            selected_month = st.selectbox("เลือกเดือน", avail_months, index=len(avail_months)-1 if avail_months else 0)
+        with col_f2:
+            selected_person = st.selectbox("เลือกรายชื่อ", ALL_NAMES_SORTED)
 
-            # 1. ดึงข้อมูลสแกน (เทียบวันที่แบบ 00:00:00 == 00:00:00)
-            att = df_month[(df_month[name_col] == name) & (df_month["วันที่"] == d)]
+        if selected_month and selected_person:
+            # Generate Date Range
+            curr_month_dt = pd.to_datetime(selected_month + "-01")
+            days_in_month = pd.date_range(curr_month_dt, curr_month_dt + pd.offsets.MonthEnd(0), freq='D')
             
-            # 2. ตรวจสอบการลา (เทียบช่วงวันที่แบบไม่มีเวลา)
-            in_leave = False
-            leave_type = ""
-            # กรองข้อมูลลาของคนนี้ และวันที่ d อยู่ในช่วงวันลา
-            user_leave = df_leave[df_leave["ชื่อ-สกุล"] == name]
-            if not user_leave.empty:
-                # เนื่องจาก normalize มาแล้ว เปรียบเทียบได้เลย
-                match_leave = user_leave[(user_leave["วันที่เริ่ม"] <= d) & (user_leave["วันที่สิ้นสุด"] >= d)]
-                if not match_leave.empty:
-                    in_leave = True
-                    leave_type = match_leave.iloc[0]["ประเภทการลา"]
+            # Prepare Dataframes for lookup
+            # 1. Leave
+            user_leave = df_leave[df_leave["ชื่อ-สกุล"] == selected_person].copy() if not df_leave.empty else pd.DataFrame()
+            # 2. Travel
+            user_travel = df_travel[df_travel["ชื่อ-สกุล"] == selected_person].copy() if not df_travel.empty else pd.DataFrame()
+            # 3. Attendance
+            user_att = df_att[(df_att[att_name_col] == selected_person) & (df_att["เดือน_str"] == selected_month)].copy()
 
-            # 3. ตรวจสอบไปราชการ
-            in_travel = False
-            user_travel = df_travel[df_travel["ชื่อ-สกุล"] == name]
-            if not user_travel.empty:
-                match_travel = user_travel[(user_travel["วันที่เริ่ม"] <= d) & (user_travel["วันที่สิ้นสุด"] >= d)]
-                if not match_travel.empty:
-                    in_travel = True
-
-            # --- กำหนดสถานะ ---
-            if in_leave:
-                rec["สถานะ"] = f"ลา ({leave_type})"
-            elif in_travel:
-                rec["สถานะ"] = "ไปราชการ"
-            elif not att.empty:
-                row = att.iloc[0]
-                rec["เวลาเข้า"] = row.get("เวลาเข้า", "")
-                rec["เวลาออก"] = row.get("เวลาออก", "")
-                rec["หมายเหตุ"] = row.get("หมายเหตุ", "")
+            report_data = []
+            
+            for d in days_in_month:
+                date_only = d.date()
+                status = ""
+                note = ""
+                t_in_show = ""
+                t_out_show = ""
                 
-                if d.weekday() >= 5: # เสาร์-อาทิตย์
-                    rec["สถานะ"] = "วันหยุด"
-                else:
-                    try:
-                        t_in = pd.to_datetime(str(rec["เวลาเข้า"])).time() if rec["เวลาเข้า"] else None
-                        t_out = pd.to_datetime(str(rec["เวลาออก"])).time() if rec["เวลาออก"] else None
-                    except Exception:
-                        t_in, t_out = None, None
+                # Check 1: Leave
+                is_leave = False
+                if not user_leave.empty:
+                    match_leave = user_leave[(user_leave["วันที่เริ่ม"] <= d) & (user_leave["วันที่สิ้นสุด"] >= d)]
+                    if not match_leave.empty:
+                        is_leave = True
+                        l_type = match_leave.iloc[0]["ประเภทการลา"]
+                        status = f"ลา ({l_type})"
+                
+                # Check 2: Travel
+                is_travel = False
+                if not is_leave and not user_travel.empty:
+                    match_travel = user_travel[(user_travel["วันที่เริ่ม"] <= d) & (user_travel["วันที่สิ้นสุด"] >= d)]
+                    if not match_travel.empty:
+                        is_travel = True
+                        status = "ไปราชการ"
+
+                # Check 3: Weekend
+                is_weekend = d.weekday() >= 5
+                
+                # Check 4: Attendance Scan
+                scan_row = user_att[user_att["วันที่"] == d]
+                
+                has_scan = False
+                if not scan_row.empty:
+                    has_scan = True
+                    row_data = scan_row.iloc[0]
                     
-                    if not t_in and not t_out:
-                        rec["สถานะ"] = "ขาดงาน"
-                    elif t_in and t_in > WORK_START:
-                        if not t_out or t_out < WORK_END:
-                            rec["สถานะ"] = "มาสายและออกก่อน"
+                    # Parse Time Logic
+                    raw_in = row_data.get("เวลาเข้า")
+                    raw_out = row_data.get("เวลาออก")
+                    
+                    # Helper to convert to time object
+                    def parse_time(val):
+                        if pd.isna(val): return None
+                        if isinstance(val, dt.time): return val
+                        try: return pd.to_datetime(str(val)).time()
+                        except: return None
+
+                    t_in = parse_time(raw_in)
+                    t_out = parse_time(raw_out)
+                    
+                    t_in_show = t_in.strftime("%H:%M") if t_in else "-"
+                    t_out_show = t_out.strftime("%H:%M") if t_out else "-"
+                    note = row_data.get("หมายเหตุ", "")
+
+                    # Status Determination
+                    WORK_START = dt.time(8, 30)
+                    WORK_END = dt.time(16, 30)
+                    
+                    if not status: # ถ้าไม่ได้ลา หรือ ไปราชการ
+                        if is_weekend:
+                            status = "มาทำโอที" if (t_in or t_out) else "วันหยุด"
                         else:
-                            rec["สถานะ"] = "มาสาย"
-                    elif not t_out or t_out < WORK_END:
-                        rec["สถานะ"] = "ออกก่อน"
-                    else:
-                        rec["สถานะ"] = "มาปกติ"
-            else:
-                rec["สถานะ"] = "วันหยุด" if d.weekday() >= 5 else "ขาดงาน"
-            
-            records.append(rec)
-            
-    prog.empty()
+                            if not t_in and not t_out:
+                                status = "ขาดงาน"
+                            elif t_in and t_in > WORK_START:
+                                status = "มาสาย"
+                                if t_out and t_out < WORK_END:
+                                    status += "+ออกก่อน"
+                            elif t_out and t_out < WORK_END:
+                                status = "ออกก่อน"
+                            else:
+                                status = "มาปกติ"
+                
+                # Final Status Cleanup
+                if not status:
+                    status = "วันหยุด" if is_weekend else "ขาดงาน"
 
-    df_daily = pd.DataFrame(records)
-    if not df_daily.empty:
-        df_daily = df_daily.sort_values(["ชื่อพนักงาน", "วันที่"])
-
-    def color_status(val):
-        colors = {
-            "มาปกติ": "background-color:#d4edda",
-            "มาสาย": "background-color:#ffeeba",
-            "ออกก่อน": "background-color:#f8d7da",
-            "มาสายและออกก่อน": "background-color:#fcd5b5",
-            "ลา": "background-color:#d1ecf1",
-            "ไปราชการ": "background-color:#fff3cd",
-            "วันหยุด": "background-color:#e2e3e5",
-            "ขาดงาน": "background-color:#f5c6cb"
-        }
-        for key in colors:
-            if key in str(val):
-                return colors[key]
-        return ""
-
-    # ... (โค้ดส่วนก่อนหน้า จนถึง st.dataframe(df_daily...) จบส่วนรายวัน) ...
-
-    st.markdown("---")
-    st.subheader("📊 สรุปสถิติรวมต่อเดือนต่อคน")
-
-    # 1. สร้างคอลัมน์ "สถานะย่อ" ก่อน (ต้องทำตรงนี้ก่อน ถึงจะเรียกใช้ได้)
-    def simplify_status(s):
-        if isinstance(s, str) and s.startswith("ลา"):
-            return "ลา"
-        return s
-    
-    # สร้างคอลัมน์ใหม่ลงใน DataFrame
-    df_daily["สถานะย่อ"] = df_daily["สถานะ"].apply(simplify_status)
-
-    # 2. ทำ Pivot Table (ตารางสรุป)
-    summary = df_daily.pivot_table(index="ชื่อพนักงาน", columns="สถานะย่อ", aggfunc="size", fill_value=0)
-
-    # 3. 🛠️ บังคับให้แสดงคอลัมน์ให้ครบ (แก้ปัญหาคอลัมน์หายเมื่อไม่มีข้อมูล)
-    # รายชื่อคอลัมน์ที่อยากให้โชว์เสมอ
-    required_cols = ["มาปกติ", "มาสาย", "ออกก่อน", "มาสายและออกก่อน", "ลา", "ไปราชการ", "วันหยุด", "ขาดงาน"]
-    
-    for col in required_cols:
-        if col not in summary.columns:
-            summary[col] = 0  # ถ้าไม่มีคอลัมน์ไหน ให้สร้างขึ้นมาแล้วใส่ค่า 0
-
-    # จัดเรียงลำดับคอลัมน์ให้สวยงามตามลำดับใน required_cols
-    # (ใช้ list intersection เพื่อกันกรณีมีสถานะแปลกๆ ที่ไม่อยู่ใน list)
-    existing_cols = [c for c in required_cols if c in summary.columns]
-    other_cols = [c for c in summary.columns if c not in required_cols]
-    summary = summary[existing_cols + other_cols]
-
-    # 4. รีเซ็ต index เพื่อให้ชื่อพนักงานกลับมาเป็นคอลัมน์ปกติ
-    summary = summary.reset_index()
-
-    # แสดงผลตารางสรุป
-    st.dataframe(summary, use_container_width=True)
-
-    # 5. ส่วนดาวน์โหลด Excel
-    excel_output = io.BytesIO()
-    with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
-        df_daily.to_excel(writer, index=False, sheet_name="รายวัน")
-        summary.to_excel(writer, index=False, sheet_name="สรุปสถิติรวม")
-    excel_output.seek(0)
-    
-    st.download_button(
-        label="📥 ดาวน์โหลดรายงานสรุป (รายวัน + รวมต่อเดือน)", 
-        data=excel_output, 
-        file_name=f"รายงานสรุป_{selected_month}.xlsx", 
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-# ----------------------------
-# 🧭 การไปราชการ
-# ----------------------------
-elif menu == "🧭 การไปราชการ":
-    st.header("🧭 บันทึกข้อมูลไปราชการ (หมู่คณะ)")
-    with st.form("form_travel_group"):
-        data_ui = {
-            "กลุ่มงาน": st.selectbox("กลุ่มงาน", staff_groups),
-            "กิจกรรม": st.text_input("กิจกรรม/โครงการ"),
-            "สถานที่": st.text_input("สถานที่"),
-            "วันที่เริ่ม": st.date_input("วันที่เริ่ม", dt.date.today()),
-            "วันที่สิ้นสุด": st.date_input("วันที่สิ้นสุด", dt.date.today())
-        }
-        days = count_weekdays(data_ui["วันที่เริ่ม"], data_ui["วันที่สิ้นสุด"])
-        if days > 0:
-            st.caption(f"🗓️ รวมวันทำการ {days} วัน")
-
-        selected = st.multiselect("รายชื่อผู้เดินทาง", options=all_names)
-        new_names = st.text_area("เพิ่มชื่อใหม่ (ถ้ามี)", placeholder="ใส่ชื่อทีละบรรทัด")
-        upload = st.file_uploader("แนบไฟล์คำสั่ง (PDF)", type="pdf")
-
-        submitted = st.form_submit_button("💾 บันทึกข้อมูล")
-
-    if submitted:
-        names = list(set(selected + [x.strip() for x in new_names.splitlines() if x.strip()]))
-        if not names:
-            st.warning("กรุณาเลือกหรือกรอกชื่ออย่างน้อย 1 คน")
-        elif data_ui["วันที่เริ่ม"] > data_ui["วันที่สิ้นสุด"]:
-            st.error("วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด")
-        else:
-            folder_id = get_or_create_folder(ATTACHMENT_FOLDER_NAME, FOLDER_ID)
-            file_link = "-"
-            if upload:
-                safe_name = re.sub(r"[^\wก-๙]", "_", data_ui["กิจกรรม"])
-                filename = f"{data_ui['วันที่เริ่ม']}_{safe_name}_{names[0]}.pdf"
-                file_link = upload_pdf_to_drive(upload, filename, folder_id)
-
-            backup_excel(FILE_TRAVEL, df_travel)
-            now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-            records = []
-            for n in names:
-                records.append({
-                    **data_ui, "ชื่อ-สกุล": n,
-                    "ผู้ร่วมเดินทาง": ", ".join([x for x in names if x != n]) or "-",
-                    "จำนวนวัน": days,
-                    "ลิงก์เอกสาร": file_link,
-                    "last_update": now
+                report_data.append({
+                    "วันที่": date_only,
+                    "สถานะ": status,
+                    "เวลาเข้า": t_in_show,
+                    "เวลาออก": t_out_show,
+                    "หมายเหตุ": note
                 })
-            df_new = pd.concat([df_travel, pd.DataFrame(records)], ignore_index=True)
-            write_excel_to_drive(FILE_TRAVEL, df_new)
-            st.success("✅ บันทึกข้อมูลเรียบร้อยแล้ว!")
-            st.rerun()
 
-    st.markdown("### 📋 ข้อมูลไปราชการทั้งหมด")
-    if not df_travel.empty:
-        st.dataframe(df_travel.astype(str).sort_values("วันที่เริ่ม", ascending=False),
-                     column_config={"ลิงก์เอกสาร": st.column_config.LinkColumn("เอกสารแนบ", display_text="🔗 เปิดไฟล์")})
-    else:
-        st.info("ยังไม่มีข้อมูลไปราชการ")
+            # Display Report
+            df_report = pd.DataFrame(report_data)
+            
+            # Styling
+            def color_row(row):
+                s = row["สถานะ"]
+                if "มาสาย" in s or "ออกก่อน" in s: return ["background-color: #fef08a"] * len(row) # Yellow
+                if "ขาดงาน" in s: return ["background-color: #fca5a5"] * len(row) # Red
+                if "ลา" in s: return ["background-color: #bfdbfe"] * len(row) # Blue
+                if "ราชการ" in s: return ["background-color: #bbf7d0"] * len(row) # Green
+                return [""] * len(row)
 
-# ----------------------------
-# 🕒 การลา
-# ----------------------------
-elif menu == "🕒 การลา":
-    st.header("🕒 บันทึกข้อมูลการลา")
-    with st.form("form_leave"):
-        name = st.text_input("ชื่อ-สกุล")
-        group = st.selectbox("กลุ่มงาน", staff_groups)
-        leave_type = st.selectbox("ประเภทการลา", leave_types)
-        start = st.date_input("วันที่เริ่ม", dt.date.today())
-        end = st.date_input("วันที่สิ้นสุด", dt.date.today())
-        days = count_weekdays(start, end)
-        if days > 0:
-            st.caption(f"🗓️ รวมวันทำการ {days} วัน")
-        submit_leave = st.form_submit_button("💾 บันทึกข้อมูล")
+            st.dataframe(df_report.style.apply(color_row, axis=1), use_container_width=True, height=500)
+            
+            # Download Button
+            csv = df_report.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 ดาวน์โหลดรายงาน (CSV)", csv, f"Report_{selected_person}_{selected_month}.csv", "text/csv")
 
-    if submit_leave:
-        if not name:
-            st.warning("กรุณากรอกชื่อ")
-        elif start > end:
-            st.error("วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด")
-        else:
-            backup_excel(FILE_LEAVE, df_leave)
-            rec = {
-                "ชื่อ-สกุล": name, "กลุ่มงาน": group, "ประเภทการลา": leave_type,
-                "วันที่เริ่ม": start, "วันที่สิ้นสุด": end,
-                "จำนวนวันลา": days,
-                "last_update": dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-            }
-            df_new = pd.concat([df_leave, pd.DataFrame([rec])], ignore_index=True)
-            write_excel_to_drive(FILE_LEAVE, df_new)
-            st.success("✅ บันทึกข้อมูลการลาเรียบร้อย")
-            st.rerun()
-
-    st.markdown("### 📋 ข้อมูลการลาทั้งหมด")
-    if not df_leave.empty:
-        st.dataframe(df_leave.astype(str).sort_values("วันที่เริ่ม", ascending=False))
-    else:
-        st.info("ยังไม่มีข้อมูลการลา")
-
-elif menu == "🧑‍💼 ผู้ดูแลระบบ":
-    st.header("🔐 ผู้ดูแลระบบ")
+# ---------------------------
+# 🧭 บันทึกไปราชการ
+# ---------------------------
+elif menu == "🧭 บันทึกไปราชการ":
+    st.header("📝 แบบฟอร์มขออนุมัติเดินทางไปราชการ")
     
-    if "admin_logged_in" not in st.session_state:
-        st.session_state.admin_logged_in = False
-
-    if not st.session_state.admin_logged_in:
-        pwd = st.text_input("กรอกรหัสผ่าน", type="password")
-        if st.button("เข้าสู่ระบบ"):
-            if pwd == ADMIN_PASSWORD:
-                st.session_state.admin_logged_in = True
-                st.rerun()
-            else:
-                st.error("❌ รหัสผ่านไม่ถูกต้อง")
-        st.stop()
-
-    st.success("คุณได้เข้าสู่ระบบผู้ดูแลแล้ว 🧑‍💼")
-    if st.button("🚪 ออกจากระบบ"):
-        st.session_state.admin_logged_in = False
-        st.rerun()
-
-    tabA, tabB, tabC = st.tabs(["📗 แก้ไขข้อมูลการลา", "📘 แก้ไขข้อมูลไปราชการ", "🟩 แก้ไขข้อมูลสแกน"])
-
-    with tabA:
-        st.caption("แก้ไขตารางด้านล่างได้โดยตรง (เพิ่ม/ลบ/แก้ไข) แล้วกดปุ่มบันทึก")
-        edited_leave = st.data_editor(df_leave.astype(str), num_rows="dynamic", use_container_width=True, key="ed_leave")
-        if st.button("💾 บันทึกข้อมูลการลา", key="save_leave"):
-            with st.spinner("กำลังบันทึก..."):
-                backup_excel(FILE_LEAVE, df_leave)
-                edited_leave['last_update'] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-                write_excel_to_drive(FILE_LEAVE, pd.DataFrame(edited_leave))
-                st.success("✅ บันทึกข้อมูลการลาเรียบร้อย")
-                st.rerun()
+    with st.form("form_travel"):
+        c1, c2 = st.columns(2)
+        with c1:
+            group_job = st.selectbox("กลุ่มงาน", STAFF_GROUPS)
+            project = st.text_input("ชื่อโครงการ/กิจกรรม")
+            location = st.text_input("สถานที่")
+        with c2:
+            d_start = st.date_input("วันที่เริ่มเดินทาง")
+            d_end = st.date_input("วันที่สิ้นสุดเดินทาง")
+            budget = st.number_input("งบประมาณ (บาท)", min_value=0.0, step=100.0)
         
-        out_leave = io.BytesIO()
-        with pd.ExcelWriter(out_leave, engine="xlsxwriter") as writer: pd.DataFrame(edited_leave).to_excel(writer, index=False)
-        out_leave.seek(0)
-        st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_leave, file_name="leave_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_leave")
+        staff_list = st.multiselect("เลือกผู้เดินทาง (ได้หลายคน)", ALL_NAMES_SORTED)
+        uploaded_pdf = st.file_uploader("แนบเอกสารขออนุมัติ (PDF)", type=["pdf"])
+        
+        submitted = st.form_submit_button("💾 บันทึกข้อมูล")
+        
+        if submitted:
+            if not staff_list or not project:
+                st.error("❌ กรุณากรอกชื่อโครงการและเลือกผู้เดินทางอย่างน้อย 1 คน")
+            elif d_start > d_end:
+                st.error("❌ วันที่เริ่มต้องน้อยกว่าวันที่สิ้นสุด")
+            else:
+                with st.spinner("กำลังบันทึกข้อมูล..."):
+                    # 1. Upload File
+                    link = "-"
+                    if uploaded_pdf:
+                        f_id = get_or_create_folder(ATTACHMENT_FOLDER_NAME, FOLDER_ID)
+                        f_name = f"TRAVEL_{dt.datetime.now().strftime('%Y%m%d_%H%M')}_{len(staff_list)}pax"
+                        link = upload_pdf_to_drive(uploaded_pdf, f_name, f_id)
+                    
+                    # 2. Prepare Data
+                    new_rows = []
+                    ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    days = count_weekdays(d_start, d_end)
+                    
+                    for person in staff_list:
+                        new_rows.append({
+                            "Timestamp": ts,
+                            "กลุ่มงาน": group_job,
+                            "ชื่อ-สกุล": person,
+                            "เรื่อง/กิจกรรม": project,
+                            "สถานที่": location,
+                            "วันที่เริ่ม": pd.to_datetime(d_start),
+                            "วันที่สิ้นสุด": pd.to_datetime(d_end),
+                            "จำนวนวัน": days,
+                            "งบประมาณ": budget,
+                            "ไฟล์แนบ": link
+                        })
+                    
+                    # 3. Save
+                    new_df = pd.DataFrame(new_rows)
+                    backup_excel(FILE_TRAVEL, df_travel)
+                    df_updated = pd.concat([df_travel, new_df], ignore_index=True)
+                    write_excel_to_drive(FILE_TRAVEL, df_updated)
+                    
+                    st.success("✅ บันทึกข้อมูลสำเร็จ!")
+                    st.rerun()
 
-    with tabB:
-        st.caption("แก้ไขตารางด้านล่างได้โดยตรง (เพิ่ม/ลบ/แก้ไข) แล้วกดปุ่มบันทึก")
-        edited_travel = st.data_editor(df_travel.astype(str), num_rows="dynamic", use_container_width=True, key="ed_travel")
-        if st.button("💾 บันทึกข้อมูลไปราชการ", key="save_travel"):
-            with st.spinner("กำลังบันทึก..."):
-                backup_excel(FILE_TRAVEL, df_travel)
-                edited_travel['last_update'] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-                write_excel_to_drive(FILE_TRAVEL, pd.DataFrame(edited_travel))
-                st.success("✅ บันทึกข้อมูลไปราชการเรียบร้อย")
-                st.rerun()
-        out_travel = io.BytesIO()
-        with pd.ExcelWriter(out_travel, engine="xlsxwriter") as writer: pd.DataFrame(edited_travel).to_excel(writer, index=False)
-        out_travel.seek(0)
-        st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_travel, file_name="travel_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_travel")
+    st.subheader("📋 ประวัติการบันทึกล่าสุด")
+    st.dataframe(df_travel.tail(5), use_container_width=True)
 
-    with tabC:
-        st.caption("ข้อมูลสแกนมีขนาดใหญ่ แนะนำให้แก้ไขเท่าที่จำเป็น (เช่น เติมหมายเหตุ)")
-        edited_att = st.data_editor(df_att.astype(str), num_rows="dynamic", use_container_width=True, key="ed_att")
-        if st.button("💾 บันทึกข้อมูลสแกน", key="save_att"):
-            with st.spinner("กำลังบันทึก..."):
-                backup_excel(FILE_ATTEND, df_att)
-                write_excel_to_drive(FILE_ATTEND, pd.DataFrame(edited_att))
-                st.success("✅ บันทึกข้อมูลสแกนเรียบร้อย")
-                st.rerun()
-        out_att = io.BytesIO()
-        with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
-        out_att.seek(0)
-        st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+# ---------------------------
+# 🕒 บันทึกการลา
+# ---------------------------
+elif menu == "🕒 บันทึกการลา":
+    st.header("📝 แบบฟอร์มบันทึกการลา")
+    
+    with st.form("form_leave"):
+        c1, c2 = st.columns(2)
+        with c1:
+            l_name = st.selectbox("ชื่อ-สกุล", ALL_NAMES_SORTED)
+            l_group = st.selectbox("กลุ่มงาน", STAFF_GROUPS)
+            l_type = st.selectbox("ประเภทการลา", LEAVE_TYPES)
+        with c2:
+            l_start = st.date_input("วันที่เริ่มลา")
+            l_end = st.date_input("ถึงวันที่")
+            l_reason = st.text_area("เหตุผลการลา")
+            
+        l_file = st.file_uploader("แนบใบลา (PDF)", type=["pdf"])
+        l_submit = st.form_submit_button("💾 บันทึกการลา")
+        
+        if l_submit:
+            if l_start > l_end:
+                st.error("❌ วันที่ผิดพลาด")
+            else:
+                with st.spinner("กำลังบันทึก..."):
+                    link = "-"
+                    if l_file:
+                        f_id = get_or_create_folder(ATTACHMENT_FOLDER_NAME, FOLDER_ID)
+                        f_name = f"LEAVE_{l_name}_{dt.datetime.now().strftime('%Y%m%d')}"
+                        link = upload_pdf_to_drive(l_file, f_name, f_id)
+                    
+                    days = count_weekdays(l_start, l_end)
+                    new_record = {
+                        "Timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "ชื่อ-สกุล": l_name,
+                        "กลุ่มงาน": l_group,
+                        "ประเภทการลา": l_type,
+                        "วันที่เริ่ม": pd.to_datetime(l_start),
+                        "วันที่สิ้นสุด": pd.to_datetime(l_end),
+                        "จำนวนวันลา": days,
+                        "เหตุผล": l_reason,
+                        "ไฟล์แนบ": link
+                    }
+                    
+                    backup_excel(FILE_LEAVE, df_leave)
+                    df_upd = pd.concat([df_leave, pd.DataFrame([new_record])], ignore_index=True)
+                    write_excel_to_drive(FILE_LEAVE, df_upd)
+                    
+                    st.success("✅ บันทึกเรียบร้อย")
+                    st.rerun()
 
+    st.subheader("📋 ประวัติการลาล่าสุด")
+    st.dataframe(df_leave.tail(5), use_container_width=True)
 
+# ---------------------------
+# ⚙️ ผู้ดูแลระบบ
+# ---------------------------
+elif menu == "⚙️ ผู้ดูแลระบบ":
+    st.header("🔒 ส่วนจัดการข้อมูล (Admin Only)")
+    password = st.text_input("🔑 ใส่รหัสผ่าน Admin", type="password")
+    
+    if password == ADMIN_PASSWORD:
+        st.success("Access Granted")
+        
+        tab1, tab2, tab3 = st.tabs(["📂 จัดการไฟล์ลา", "📂 จัดการไฟล์ราชการ", "📂 จัดการไฟล์สแกนนิ้ว"])
+        
+        def admin_panel(df, filename, tab_obj):
+            with tab_obj:
+                st.subheader(f"ไฟล์: {filename}")
+                st.dataframe(df.head(10))
+                st.caption(f"แถวทั้งหมด: {len(df)}")
+                
+                # Download
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                    df.to_excel(writer, index=False)
+                st.download_button(f"⬇️ ดาวน์โหลด {filename}", buffer.getvalue(), filename)
+                
+                st.markdown("---")
+                st.warning("⚠️ การอัปโหลดจะเขียนทับข้อมูลเดิมทั้งหมด")
+                up_file = st.file_uploader(f"อัปโหลดทับ {filename}", type=["xlsx"], key=filename)
+                
+                if up_file:
+                    if st.button(f"ยืนยันอัปโหลด {filename}"):
+                        new_df = pd.read_excel(up_file)
+                        backup_excel(filename, df)
+                        write_excel_to_drive(filename, new_df)
+                        st.success("✅ อัปเดตไฟล์สำเร็จ! กรุณารีเฟรช")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        admin_panel(df_leave, FILE_LEAVE, tab1)
+        admin_panel(df_travel, FILE_TRAVEL, tab2)
+        admin_panel(df_att, FILE_ATTEND, tab3)
+        
+    elif password:
+        st.error("รหัสผ่านไม่ถูกต้อง")
