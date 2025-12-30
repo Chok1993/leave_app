@@ -628,7 +628,7 @@ elif menu == "📅 การมาปฏิบัติงาน":
     month_start = pd.to_datetime(selected_month + "-01")
     month_end = (month_start + pd.offsets.MonthEnd(0))
     date_range = pd.date_range(month_start, month_end, freq="D")
-        date_range = date_range.normalize()  # ตัดเวลาออกเหลือแค่วันที่
+    date_range = date_range.normalize()  # ตัดเวลาออกเหลือแค่วันที่
 
     records = []
     names_to_process = selected_names if selected_names else all_names_union
@@ -940,6 +940,7 @@ elif menu == "🧑‍💼 ผู้ดูแลระบบ":
         with pd.ExcelWriter(out_att, engine="xlsxwriter") as writer: pd.DataFrame(edited_att).to_excel(writer, index=False)
         out_att.seek(0)
         st.download_button("⬇️ ดาวน์โหลดข้อมูลทั้งหมด (Excel)", data=out_att, file_name="attendance_all_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="download_att")
+
 
 
 
