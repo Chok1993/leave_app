@@ -344,7 +344,7 @@ def validate_travel_data(
     location: str,
     start_date,
     end_date,
-    budget: float
+    : float
 ) -> List[str]:
     """Validate travel request data"""
     errors = []
@@ -360,10 +360,7 @@ def validate_travel_data(
     
     if start_date > end_date:
         errors.append("❌ วันที่เริ่มต้องน้อยกว่าหรือเท่ากับวันที่สิ้นสุด")
-    
-    if budget < 0:
-        errors.append("❌ งบประมาณต้องเป็นจำนวนบวก")
-    
+        
     return errors
 
 # ===========================
@@ -1107,5 +1104,6 @@ elif menu == "⚙️ ผู้ดูแลระบบ":
     elif password:
         st.error("❌ รหัสผ่านไม่ถูกต้อง")
         st.info("💡 หากต้องการเปลี่ยนรหัสผ่าน กรุณาติดต่อผู้พัฒนาระบบ")
+
 
 
