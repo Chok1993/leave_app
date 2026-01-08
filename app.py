@@ -362,23 +362,16 @@ def validate_travel_data(
 # ===========================
 
 def check_admin_password(password: str) -> bool:
-    """ตรวจสอบรหัสผ่าน Admin แบบ secure"""
-    if not password:
+    """ตรวจสอบรหัสผ่าน Admin (กำหนดตายตัว)"""
+    # ✅ กำหนดรหัสผ่านที่ต้องการตรงนี้
+    CORRECT_PASSWORD = "204486" 
+    
+    # ตรวจสอบว่ารหัสที่กรอกมา ตรงกับรหัสที่ตั้งไว้หรือไม่
+    if password == CORRECT_PASSWORD:
+        return True
+    else:
         return False
-    
-    # Use hashed password if available
-    if "admin_password_hash" in st.secrets:
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        return password_hash == st.secrets["admin_password_hash"]
-    
-    # Fallback to plain password (not recommended)
-    admin_pass = st.secrets.get("admin_password", "")
-    if not admin_pass:
-        st.error("⚠️ ระบบยังไม่ได้กำหนดรหัสผ่าน Admin")
-        return False
-    
-    return password == admin_pass
-
+        
 # ===========================
 # 📊 6. Data Processing Functions
 # ===========================
@@ -1120,4 +1113,5 @@ elif menu == "⚙️ ผู้ดูแลระบบ":
     elif password:
         st.error("❌ รหัสผ่านไม่ถูกต้อง")
         st.info("💡 หากต้องการเปลี่ยนรหัสผ่าน กรุณาติดต่อผู้พัฒนาระบบ")
+
 
