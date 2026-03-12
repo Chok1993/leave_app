@@ -1405,10 +1405,10 @@ elif menu == "⚙️ ผู้ดูแลระบบ":
             df_att    = read_excel_from_drive(FILE_ATTEND)
             df_staff  = read_excel_from_drive(FILE_STAFF)
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📂 ไฟล์ลา", "📂 ไฟล์ราชการ",
             "📂 ไฟล์สแกนนิ้ว", "📂 ไฟล์บุคลากร",
-            "🔧 ตั้งค่าระบบ",
+            "🔧 ตั้งค่าระบบ", "👆 คีย์ลืมสแกนนิ้ว",
         ])
 
         def admin_file_panel(df, filename, tab_obj):
@@ -1472,6 +1472,266 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
             )
             st.dataframe(df_quota_cfg, use_container_width=True)
             st.caption("หากต้องการเปลี่ยนโควต้า ให้แก้ไขค่า LEAVE_QUOTA ในไฟล์ app.py")
+
+        # ============================================================
+        # 👆 Tab 6 — คีย์ลืมสแกนนิ้ว
+        # ============================================================
+        with tab6:
+            st.subheader("👆 บันทึกเวลาทำการสำหรับผู้ที่ลืมสแกนนิ้ว")
+            st.info(
+                "ใช้สำหรับกรณีที่เครื่องสแกนขัดข้อง หรือบุคลากรลืมสแกนนิ้ว "
+                "ข้อมูลที่คีย์จะถูกเพิ่มเข้าไปใน `attendance_report.xlsx` "
+                "พร้อมหมายเหตุว่า **Admin เพิ่มเอง**"
+            )
+
+            # ─── โหลดรายชื่อ ───
+            all_staff_names = get_active_staff(df_staff) or get_all_names_fallback(
+                df_leave, df_travel, df_att
+            )
+
+            # ─── ตรวจสอบ column ที่มีในไฟล์สแกน ───
+            ATT_REQUIRED_COLS = ["ชื่อ-สกุล", "วันที่", "เวลาเข้า", "เวลาออก", "หมายเหตุ"]
+            if df_att.empty:
+                df_att = pd.DataFrame(columns=ATT_REQUIRED_COLS)
+            for col in ATT_REQUIRED_COLS:
+                if col not in df_att.columns:
+                    df_att[col] = ""
+
+            st.markdown("---")
+
+            # ─── ฟอร์มคีย์ข้อมูล ───
+            with st.form("form_manual_scan"):
+                col_f1, col_f2 = st.columns(2)
+
+                with col_f1:
+                    ms_name = st.selectbox(
+                        "ชื่อ-สกุล *",
+                        all_staff_names,
+                        help="เลือกชื่อบุคลากรที่ลืมสแกน",
+                    )
+                    ms_date = st.date_input(
+                        "วันที่ลืมสแกน *",
+                        value=dt.date.today(),
+                        max_value=dt.date.today(),
+                        help="ไม่สามารถคีย์วันในอนาคตได้",
+                    )
+
+                with col_f2:
+                    ms_time_in  = st.time_input(
+                        "เวลาเข้างาน *",
+                        value=dt.time(8, 30),
+                        step=60,
+                    )
+                    ms_time_out = st.time_input(
+                        "เวลาออกงาน *",
+                        value=dt.time(16, 30),
+                        step=60,
+                    )
+
+                ms_note = st.text_input(
+                    "หมายเหตุเพิ่มเติม",
+                    value="Admin คีย์แทน — ลืมสแกนนิ้ว",
+                    help="ระบบจะเพิ่มชื่อ Admin และเวลาที่คีย์ให้อัตโนมัติ",
+                )
+
+                ms_submit = st.form_submit_button(
+                    "💾 บันทึกข้อมูลสแกนนิ้ว",
+                    use_container_width=True,
+                    type="primary",
+                )
+
+                if ms_submit:
+                    # ─── Validation ───
+                    scan_errors: List[str] = []
+                    if not ms_name:
+                        scan_errors.append("❌ กรุณาเลือกชื่อ")
+                    if ms_time_in >= ms_time_out:
+                        scan_errors.append("❌ เวลาเข้างานต้องน้อยกว่าเวลาออกงาน")
+
+                    # เช็คว่ามีข้อมูลวันนั้นซ้ำอยู่แล้วหรือไม่
+                    ms_date_ts = pd.to_datetime(ms_date)
+                    existing = df_att[
+                        (df_att["ชื่อ-สกุล"].astype(str).str.strip() == ms_name)
+                        & (pd.to_datetime(df_att["วันที่"], errors="coerce").dt.normalize() == ms_date_ts)
+                    ]
+                    if not existing.empty:
+                        scan_errors.append(
+                            f"⚠️ มีข้อมูลสแกนของ {ms_name} วันที่ {ms_date} อยู่แล้ว "
+                            f"(เวลาเข้า: {existing.iloc[0].get('เวลาเข้า','?')} "
+                            f"เวลาออก: {existing.iloc[0].get('เวลาออก','?')}) "
+                            f"— หากต้องการแก้ไข ให้ลบแถวเดิมก่อนในแท็บ '📂 ไฟล์สแกนนิ้ว'"
+                        )
+
+                    if scan_errors:
+                        for err in scan_errors:
+                            st.error(err)
+                    else:
+                        with st.status("กำลังบันทึก...", expanded=True) as status:
+                            try:
+                                note_full = (
+                                    f"{ms_note} | คีย์โดย Admin "
+                                    f"{dt.datetime.now().strftime('%d/%m/%Y %H:%M')}"
+                                )
+                                new_scan_row = {
+                                    "ชื่อ-สกุล":  ms_name,
+                                    "วันที่":      pd.to_datetime(ms_date),
+                                    "เวลาเข้า":    ms_time_in.strftime("%H:%M"),
+                                    "เวลาออก":     ms_time_out.strftime("%H:%M"),
+                                    "หมายเหตุ":    note_full,
+                                }
+                                backup_excel(FILE_ATTEND, df_att)
+                                df_att_upd = pd.concat(
+                                    [df_att, pd.DataFrame([new_scan_row])],
+                                    ignore_index=True,
+                                )
+                                # เรียงลำดับตามชื่อ + วันที่
+                                df_att_upd = df_att_upd.sort_values(
+                                    ["ชื่อ-สกุล", "วันที่"], ignore_index=True
+                                )
+
+                                if write_excel_to_drive(FILE_ATTEND, df_att_upd):
+                                    log_activity(
+                                        "คีย์สแกนนิ้ว",
+                                        f"Admin คีย์ {ms_date} เข้า {ms_time_in.strftime('%H:%M')} ออก {ms_time_out.strftime('%H:%M')}",
+                                        ms_name,
+                                    )
+                                    df_att = df_att_upd  # อัปเดต local copy
+                                    status.update(label="✅ บันทึกสำเร็จ!", state="complete")
+                                    st.toast(
+                                        f"✅ บันทึกสแกนนิ้วของ {ms_name} วันที่ {ms_date} สำเร็จ",
+                                        icon="✅",
+                                    )
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    status.update(label="❌ บันทึกล้มเหลว", state="error")
+                            except Exception as e:
+                                logger.error(f"manual_scan error: {e}")
+                                status.update(label=f"❌ {e}", state="error")
+
+            st.divider()
+
+            # ─── ค้นหาและตรวจสอบข้อมูลสแกนรายคน ───
+            st.subheader("🔍 ตรวจสอบข้อมูลสแกนรายคน")
+
+            col_s1, col_s2, col_s3 = st.columns([2, 1, 1])
+            with col_s1:
+                search_att_name = st.selectbox(
+                    "เลือกชื่อบุคลากร", all_staff_names, key="search_att_name"
+                )
+            with col_s2:
+                search_att_month_opts = (
+                    sorted(
+                        df_att["วันที่"]
+                        .dropna()
+                        .pipe(lambda s: pd.to_datetime(s, errors="coerce"))
+                        .dt.strftime("%Y-%m")
+                        .dropna()
+                        .unique()
+                        .tolist()
+                    )
+                    if not df_att.empty
+                    else [dt.date.today().strftime("%Y-%m")]
+                )
+                search_att_month = st.selectbox(
+                    "เดือน",
+                    search_att_month_opts,
+                    index=len(search_att_month_opts) - 1,
+                    key="search_att_month",
+                )
+            with col_s3:
+                st.write("")
+                st.write("")
+                show_all_flag = st.checkbox("แสดงทุกเดือน", key="show_all_att")
+
+            # กรองข้อมูลสแกน
+            if not df_att.empty:
+                df_att_view = df_att[
+                    df_att["ชื่อ-สกุล"].astype(str).str.strip() == search_att_name
+                ].copy()
+                df_att_view["วันที่"] = pd.to_datetime(df_att_view["วันที่"], errors="coerce")
+
+                if not show_all_flag:
+                    df_att_view = df_att_view[
+                        df_att_view["วันที่"].dt.strftime("%Y-%m") == search_att_month
+                    ]
+
+                df_att_view = df_att_view.sort_values("วันที่", ascending=False)
+
+                # เน้นแถวที่ Admin คีย์เอง
+                def highlight_manual(row):
+                    note = str(row.get("หมายเหตุ", ""))
+                    if "Admin คีย์แทน" in note or "Admin คีย์" in note:
+                        return ["background-color:#fef9c3"] * len(row)
+                    return [""] * len(row)
+
+                if df_att_view.empty:
+                    st.info(f"ไม่พบข้อมูลสแกนของ {search_att_name} ในเดือน {search_att_month}")
+                else:
+                    st.caption(
+                        f"พบ {len(df_att_view)} รายการ  |  "
+                        f"🟡 = รายการที่ Admin คีย์เอง"
+                    )
+                    st.dataframe(
+                        df_att_view.style.apply(highlight_manual, axis=1),
+                        use_container_width=True,
+                        height=350,
+                    )
+
+                    # ─── ลบรายการ (กรณีคีย์ผิด) ───
+                    st.divider()
+                    st.subheader("🗑️ ลบรายการที่คีย์ผิด")
+                    st.warning(
+                        "⚠️ ลบได้เฉพาะรายการที่ **Admin คีย์เอง** เท่านั้น "
+                        "(แถวที่มีคำว่า 'Admin คีย์แทน' ในหมายเหตุ)"
+                    )
+
+                    admin_rows = df_att_view[
+                        df_att_view["หมายเหตุ"].astype(str).str.contains(
+                            "Admin คีย์", na=False
+                        )
+                    ].copy()
+
+                    if admin_rows.empty:
+                        st.info("ไม่มีรายการที่ Admin คีย์เองในช่วงที่เลือก")
+                    else:
+                        # สร้างป้ายให้เลือก
+                        admin_rows["label"] = admin_rows.apply(
+                            lambda r: (
+                                f"{r['วันที่'].strftime('%d/%m/%Y') if pd.notna(r['วันที่']) else '?'} "
+                                f"— เข้า {r.get('เวลาเข้า','?')} "
+                                f"ออก {r.get('เวลาออก','?')}"
+                            ),
+                            axis=1,
+                        )
+                        del_label = st.selectbox(
+                            "เลือกรายการที่ต้องการลบ",
+                            admin_rows["label"].tolist(),
+                            key="del_att_select",
+                        )
+                        del_row = admin_rows[admin_rows["label"] == del_label]
+
+                        if st.button(
+                            f"🗑️ ลบรายการนี้",
+                            key="btn_del_att",
+                            type="primary",
+                        ):
+                            if not del_row.empty:
+                                idx_to_drop = del_row.index.tolist()
+                                df_att_new = df_att.drop(index=idx_to_drop).reset_index(drop=True)
+                                backup_excel(FILE_ATTEND, df_att)
+                                if write_excel_to_drive(FILE_ATTEND, df_att_new):
+                                    log_activity(
+                                        "ลบสแกนนิ้ว",
+                                        f"Admin ลบรายการ {del_label}",
+                                        search_att_name,
+                                    )
+                                    df_att = df_att_new
+                                    st.toast("✅ ลบรายการสำเร็จ", icon="🗑️")
+                                    time.sleep(1)
+                                    st.rerun()
+            else:
+                st.info("ยังไม่มีข้อมูลสแกนในระบบ")
 
     elif password:
         st.error("❌ รหัสผ่านไม่ถูกต้อง")
