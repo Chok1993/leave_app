@@ -652,7 +652,10 @@ elif menu == "📊 Dashboard & รายงาน":
     c3.metric("👆 ข้อมูลสแกนนิ้ว", len(df_att))
 
     st.divider()
-    tab_a, tab_b, tab_c, tab_d = st.tabs(["🏆 Top Charts", "📈 แนวโน้มรายเดือน", "🏢 แยกกลุ่มงาน", "📥 Export รายงาน"])
+    tab_a, tab_b, tab_c, tab_late, tab_d = st.tabs([
+        "🏆 Top Charts", "📈 แนวโน้มรายเดือน",
+        "🏢 แยกกลุ่มงาน", "⏰ สถิติการมาสาย", "📥 Export รายงาน",
+    ])
 
     with tab_a:
         col1, col2 = st.columns(2)
@@ -728,6 +731,187 @@ elif menu == "📊 Dashboard & รายงาน":
             st.altair_chart(grouped_chart, use_container_width=True)
         else:
             st.info("ไม่มีข้อมูล")
+
+    # ─────────────────────────────────────────────
+    # ⏰ Tab: สถิติการมาสาย
+    # ─────────────────────────────────────────────
+    with tab_late:
+        st.subheader("⏰ สถิติการมาสาย / ออกก่อน")
+
+        if df_att.empty:
+            st.info("ยังไม่มีข้อมูลสแกนนิ้วในระบบ")
+        else:
+            # ── filter: ปี / กลุ่มงาน
+            late_col1, late_col2, late_col3 = st.columns([1, 1, 2])
+            att_years = sorted(
+                df_att["วันที่"].dropna()
+                .pipe(lambda s: pd.to_datetime(s, errors="coerce"))
+                .dt.year.dropna().astype(int).unique().tolist(),
+                reverse=True,
+            )
+            with late_col1:
+                sel_year = st.selectbox(
+                    "ปี", att_years,
+                    key="late_year",
+                )
+            with late_col2:
+                sel_late_group = st.selectbox(
+                    "กลุ่มงาน", ["ทุกกลุ่ม"] + STAFF_GROUPS,
+                    key="late_group",
+                )
+            with late_col3:
+                sel_late_status = st.multiselect(
+                    "สถานะที่ต้องการดู",
+                    ["มาสาย", "ออกก่อน", "มาสายและออกก่อน", "ขาดงาน"],
+                    default=["มาสาย", "มาสายและออกก่อน"],
+                    key="late_status",
+                )
+
+            WORK_START_L = dt.time(8, 30)
+            WORK_END_L   = dt.time(16, 30)
+
+            df_att_y = df_att.copy()
+            df_att_y["วันที่"] = pd.to_datetime(df_att_y["วันที่"], errors="coerce")
+            df_att_y = df_att_y[df_att_y["วันที่"].dt.year == sel_year]
+
+            if df_att_y.empty:
+                st.info(f"ไม่มีข้อมูลสแกนในปี {sel_year}")
+            else:
+                # กรองกลุ่มงาน (ถ้ามี staff master)
+                df_staff_dash = read_excel_from_drive(FILE_STAFF)
+                names_in_group = None
+                if sel_late_group != "ทุกกลุ่ม" and not df_staff_dash.empty and "กลุ่มงาน" in df_staff_dash.columns:
+                    names_in_group = set(
+                        df_staff_dash[df_staff_dash["กลุ่มงาน"] == sel_late_group]["ชื่อ-สกุล"]
+                        .astype(str).str.strip().tolist()
+                    )
+                    df_att_y = df_att_y[df_att_y["ชื่อ-สกุล"].isin(names_in_group)]
+
+                # คำนวณสถานะรายแถว
+                def calc_late_status(row) -> str:
+                    if pd.to_datetime(row["วันที่"], errors="coerce").weekday() >= 5:
+                        return "วันหยุด"
+                    t_in  = parse_time(row.get("เวลาเข้า", ""))
+                    t_out = parse_time(row.get("เวลาออก", ""))
+                    if not t_in and not t_out:
+                        return "ขาดงาน"
+                    late = t_in and t_in > WORK_START_L
+                    early = not t_out or t_out < WORK_END_L
+                    if late and early:  return "มาสายและออกก่อน"
+                    if late:            return "มาสาย"
+                    if early:           return "ออกก่อน"
+                    return "มาปกติ"
+
+                df_att_y["สถานะสแกน"] = df_att_y.apply(calc_late_status, axis=1)
+                df_att_y["เดือน"] = df_att_y["วันที่"].dt.strftime("%Y-%m")
+
+                # ── KPI row
+                total_days   = len(df_att_y[df_att_y["สถานะสแกน"] != "วันหยุด"])
+                total_late   = len(df_att_y[df_att_y["สถานะสแกน"].isin(["มาสาย","มาสายและออกก่อน"])])
+                total_early  = len(df_att_y[df_att_y["สถานะสแกน"].isin(["ออกก่อน","มาสายและออกก่อน"])])
+                total_absent = len(df_att_y[df_att_y["สถานะสแกน"] == "ขาดงาน"])
+                late_rate    = f"{total_late/total_days*100:.1f}%" if total_days > 0 else "—"
+
+                kc1, kc2, kc3, kc4 = st.columns(4)
+                kc1.metric("⏰ มาสาย",         f"{total_late} ครั้ง",  f"อัตรา {late_rate}")
+                kc2.metric("🚪 ออกก่อนเวลา",   f"{total_early} ครั้ง")
+                kc3.metric("❌ ขาดงาน",         f"{total_absent} ครั้ง")
+                kc4.metric("📅 วันทำการ (รวม)", f"{total_days} วัน")
+
+                st.divider()
+
+                # ── กราฟแนวโน้มรายเดือน: มาสาย/ขาดงาน/ออกก่อน
+                df_late_trend = (
+                    df_att_y[df_att_y["สถานะสแกน"].isin(
+                        ["มาสาย","ออกก่อน","มาสายและออกก่อน","ขาดงาน"]
+                    )]
+                    .groupby(["เดือน","สถานะสแกน"])
+                    .size()
+                    .reset_index(name="จำนวนครั้ง")
+                )
+
+                if not df_late_trend.empty:
+                    late_chart = (
+                        alt.Chart(df_late_trend)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("เดือน:O", title="เดือน", sort=None),
+                            y=alt.Y("จำนวนครั้ง:Q", title="จำนวนครั้ง", stack="zero"),
+                            color=alt.Color(
+                                "สถานะสแกน:N",
+                                scale=alt.Scale(
+                                    domain=["มาสาย","ออกก่อน","มาสายและออกก่อน","ขาดงาน"],
+                                    range=["#F59E0B","#EF4444","#F97316","#991B1B"],
+                                ),
+                                legend=alt.Legend(orient="bottom"),
+                            ),
+                            tooltip=["เดือน","สถานะสแกน","จำนวนครั้ง"],
+                        )
+                        .properties(height=280, title=f"แนวโน้มการมาสาย/ขาดงาน ปี {sel_year}")
+                    )
+                    st.altair_chart(late_chart, use_container_width=True)
+                else:
+                    st.success("🎉 ไม่พบข้อมูลการมาสายหรือขาดงานในปีนี้")
+
+                st.divider()
+
+                # ── Top ผู้มาสายบ่อย (จำแนกตามสถานะที่เลือก)
+                if sel_late_status:
+                    df_top_late = (
+                        df_att_y[df_att_y["สถานะสแกน"].isin(sel_late_status)]
+                        .groupby("ชื่อ-สกุล")
+                        .size()
+                        .reset_index(name="จำนวนครั้ง")
+                        .sort_values("จำนวนครั้ง", ascending=False)
+                        .head(15)
+                    )
+                    if not df_top_late.empty:
+                        st.subheader(f"🏅 Top 15 ผู้มีสถานะ {' / '.join(sel_late_status)} บ่อยที่สุด")
+                        top_chart = (
+                            alt.Chart(df_top_late)
+                            .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
+                            .encode(
+                                x=alt.X("จำนวนครั้ง:Q", title="จำนวนครั้ง"),
+                                y=alt.Y("ชื่อ-สกุล:N", sort="-x", title=""),
+                                color=alt.value("#F59E0B"),
+                                tooltip=["ชื่อ-สกุล","จำนวนครั้ง"],
+                            )
+                            .properties(height=max(200, len(df_top_late) * 24))
+                        )
+                        st.altair_chart(top_chart, use_container_width=True)
+
+                        # ตาราง export
+                        st.subheader("📋 รายละเอียดรายคน")
+                        df_person_detail = (
+                            df_att_y[df_att_y["สถานะสแกน"].isin(sel_late_status)]
+                            .groupby(["ชื่อ-สกุล","สถานะสแกน"])
+                            .size()
+                            .reset_index(name="จำนวนครั้ง")
+                            .pivot_table(
+                                index="ชื่อ-สกุล",
+                                columns="สถานะสแกน",
+                                values="จำนวนครั้ง",
+                                fill_value=0,
+                            )
+                            .reset_index()
+                        )
+                        st.dataframe(df_person_detail, use_container_width=True)
+
+                        buf_late = io.BytesIO()
+                        with pd.ExcelWriter(buf_late, engine="xlsxwriter") as w:
+                            df_person_detail.to_excel(w, index=False, sheet_name="สรุปรายคน")
+                            df_att_y[df_att_y["สถานะสแกน"].isin(sel_late_status)].to_excel(
+                                w, index=False, sheet_name="รายการทั้งหมด"
+                            )
+                        buf_late.seek(0)
+                        st.download_button(
+                            "📥 Export รายงานการมาสาย",
+                            buf_late,
+                            f"LateReport_{sel_year}_{sel_late_group}.xlsx",
+                            mime=EXCEL_MIME,
+                        )
+                    else:
+                        st.success("🎉 ไม่พบข้อมูลสถานะที่เลือกในปีนี้")
 
     with tab_d:
         # [R5] Export Excel หลายชีต
@@ -805,34 +989,105 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
 
     name_col = next((c for c in ["ชื่อ-สกุล","ชื่อพนักงาน","ชื่อ"] if not df_att.empty and c in df_att.columns), "ชื่อ-สกุล")
 
-    col_f1, col_f2 = st.columns([1, 2])
-    with col_f1:
-        selected_month = st.selectbox("📅 เดือน", months, index=len(months)-1)
-    with col_f2:
-        selected_names = st.multiselect("👥 บุคลากร (ว่าง = ทุกคน)", all_names)
+    # ── ตัวกรอง ────────────────────────────────────────────
+    st.markdown("#### 🔍 ตัวกรองข้อมูล")
+    fc1, fc2 = st.columns([2, 2])
 
-    df_month = df_att[df_att["เดือน"] == selected_month].copy() if not df_att.empty and "เดือน" in df_att.columns else pd.DataFrame()
-    if not df_month.empty:
-        df_month[name_col] = df_month[name_col].astype(str).str.strip()
+    with fc1:
+        # Preset shortcuts
+        preset = st.radio(
+            "ช่วงเวลาด่วน",
+            ["เลือกเอง", "เดือนปัจจุบัน", "3 เดือนล่าสุด", "ครึ่งปีแรก", "ครึ่งปีหลัง", "ทั้งปีนี้"],
+            horizontal=True,
+            key="att_preset",
+        )
 
-    WORK_START = dt.time(8, 30)
-    WORK_END   = dt.time(16, 30)
-    month_start = pd.to_datetime(selected_month + "-01")
-    month_end   = month_start + pd.offsets.MonthEnd(0)
-    date_range  = pd.date_range(month_start, month_end, freq="D")
+    # สร้าง default ตาม preset
+    today_m = dt.date.today().strftime("%Y-%m")
+    def last_n_months(n):
+        result = []
+        d = dt.date.today().replace(day=1)
+        for _ in range(n):
+            result.append(d.strftime("%Y-%m"))
+            d = (d - dt.timedelta(days=1)).replace(day=1)
+        return sorted(result)
+
+    cur_year = dt.date.today().year
+    preset_map = {
+        "เดือนปัจจุบัน":  [today_m],
+        "3 เดือนล่าสุด":  last_n_months(3),
+        "ครึ่งปีแรก":     [f"{cur_year}-{m:02d}" for m in range(1, 7)],
+        "ครึ่งปีหลัง":    [f"{cur_year}-{m:02d}" for m in range(7, 13)],
+        "ทั้งปีนี้":       [f"{cur_year}-{m:02d}" for m in range(1, 13)],
+    }
+    default_months = preset_map.get(preset, [today_m]) if preset != "เลือกเอง" else [today_m]
+    # กรองเฉพาะเดือนที่มีในข้อมูล
+    valid_defaults = [m for m in default_months if m in months] or [months[-1]]
+
+    with fc2:
+        if preset == "เลือกเอง":
+            selected_months = st.multiselect(
+                "📅 เลือกเดือน (เลือกได้หลายเดือน)",
+                months,
+                default=valid_defaults,
+                key="att_months_multi",
+            )
+        else:
+            selected_months = valid_defaults
+            st.info(f"📅 เดือนที่เลือก: **{', '.join(selected_months)}**")
+
+    if not selected_months:
+        st.warning("กรุณาเลือกอย่างน้อย 1 เดือน")
+        st.stop()
+
+    fc3, fc4 = st.columns([2, 2])
+    with fc3:
+        selected_names = st.multiselect("👥 บุคลากร (ว่าง = ทุกคน)", all_names, key="att_names")
+    with fc4:
+        sel_att_group = st.selectbox("🏢 กลุ่มงาน", ["ทุกกลุ่ม"] + STAFF_GROUPS, key="att_group")
+
+    # ── กรองชื่อตามกลุ่มงาน ────────────────────────────────
+    df_staff_att = read_excel_from_drive(FILE_STAFF)
     names_to_process = selected_names or all_names
+    if sel_att_group != "ทุกกลุ่ม" and not df_staff_att.empty and "กลุ่มงาน" in df_staff_att.columns:
+        grp_set = set(
+            df_staff_att[df_staff_att["กลุ่มงาน"] == sel_att_group]["ชื่อ-สกุล"]
+            .astype(str).str.strip().tolist()
+        )
+        names_to_process = [n for n in names_to_process if n in grp_set]
 
     if not names_to_process:
         st.warning("ไม่มีข้อมูลบุคลากร")
         st.stop()
 
+    # ── สร้าง date_range จากทุกเดือนที่เลือก ────────────────
+    all_dates = pd.DatetimeIndex([])
+    for ym in selected_months:
+        ms = pd.to_datetime(ym + "-01")
+        me = ms + pd.offsets.MonthEnd(0)
+        all_dates = all_dates.append(pd.date_range(ms, me, freq="D"))
+    all_dates = all_dates.sort_values()
+
+    # ── โหลดข้อมูลสแกนเฉพาะเดือนที่เลือก ───────────────────
+    if not df_att.empty and "เดือน" in df_att.columns:
+        df_months_att = df_att[df_att["เดือน"].isin(selected_months)].copy()
+    else:
+        df_months_att = pd.DataFrame()
+    if not df_months_att.empty:
+        df_months_att[name_col] = df_months_att[name_col].astype(str).str.strip()
+
+    WORK_START = dt.time(8, 30)
+    WORK_END   = dt.time(16, 30)
+
+    # ── คำนวณข้อมูลรายวัน ────────────────────────────────────
     records = []
-    prog = st.progress(0)
+    prog = st.progress(0, text="กำลังประมวลผล...")
     for i, name in enumerate(names_to_process):
-        prog.progress((i + 1) / len(names_to_process))
-        for d in date_range:
-            rec = {"ชื่อพนักงาน": name, "วันที่": d.date(), "เวลาเข้า": "", "เวลาออก": "", "สถานะ": ""}
-            att = df_month[(df_month[name_col] == name) & (df_month["วันที่"] == d)] if not df_month.empty else pd.DataFrame()
+        prog.progress((i + 1) / len(names_to_process), text=f"กำลังประมวลผล {name}...")
+        for d in all_dates:
+            rec = {"ชื่อพนักงาน": name, "วันที่": d.date(), "เดือน": d.strftime("%Y-%m"),
+                   "เวลาเข้า": "", "เวลาออก": "", "สถานะ": ""}
+            att = df_months_att[(df_months_att[name_col] == name) & (df_months_att["วันที่"] == d)] if not df_months_att.empty else pd.DataFrame()
 
             in_leave, leave_type = False, ""
             ul = df_leave[df_leave["ชื่อ-สกุล"] == name] if not df_leave.empty else pd.DataFrame()
@@ -875,6 +1130,10 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
 
     df_daily = pd.DataFrame(records).sort_values(["ชื่อพนักงาน","วันที่"])
 
+    def simplify_status(s):
+        return "ลา" if isinstance(s, str) and s.startswith("ลา") else s
+    df_daily["สถานะย่อ"] = df_daily["สถานะ"].apply(simplify_status)
+
     STATUS_COLORS = {
         "มาปกติ": "background-color:#d4edda",
         "มาสาย": "background-color:#ffeeba",
@@ -891,28 +1150,136 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 return v
         return ""
 
-    st.dataframe(df_daily.style.map(color_status, subset=["สถานะ"]), use_container_width=True, height=480)
-    st.divider()
+    # ── แสดงผลแบบ Tab ─────────────────────────────────────────
+    att_tab1, att_tab2, att_tab3 = st.tabs([
+        "📋 ตารางรายวัน",
+        "📊 สรุปรายเดือน (ภาพรวม)",
+        "📈 กราฟแนวโน้ม",
+    ])
 
-    def simplify_status(s):
-        return "ลา" if isinstance(s, str) and s.startswith("ลา") else s
+    with att_tab1:
+        month_filter_daily = st.selectbox(
+            "กรองดูเฉพาะเดือน (ว่าง = ทุกเดือนที่เลือก)",
+            ["ทั้งหมด"] + selected_months,
+            key="daily_month_filter",
+        )
+        df_show_daily = df_daily if month_filter_daily == "ทั้งหมด" else df_daily[df_daily["เดือน"] == month_filter_daily]
+        st.caption(f"แสดง {len(df_show_daily)} แถว | {len(selected_months)} เดือน | {len(names_to_process)} คน")
+        st.dataframe(
+            df_show_daily.drop(columns=["สถานะย่อ"], errors="ignore")
+            .style.map(color_status, subset=["สถานะ"]),
+            use_container_width=True,
+            height=480,
+        )
 
-    df_daily["สถานะย่อ"] = df_daily["สถานะ"].apply(simplify_status)
-    summary = df_daily.pivot_table(index="ชื่อพนักงาน", columns="สถานะย่อ", aggfunc="size", fill_value=0)
-    required_cols = ["มาปกติ","มาสาย","ออกก่อน","มาสายและออกก่อน","ลา","ไปราชการ","วันหยุด","ขาดงาน"]
-    for col in required_cols:
-        if col not in summary.columns:
-            summary[col] = 0
-    summary = summary[[c for c in required_cols if c in summary.columns]].reset_index()
-    st.subheader("📊 สรุปสถิติรวมต่อเดือน")
-    st.dataframe(summary, use_container_width=True)
+    with att_tab2:
+        # ── สรุปภาพรวมหลายเดือน ───────────────────────────────
+        required_cols = ["มาปกติ","มาสาย","ออกก่อน","มาสายและออกก่อน","ลา","ไปราชการ","วันหยุด","ขาดงาน"]
 
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="xlsxwriter") as w:
-        df_daily.to_excel(w, index=False, sheet_name="รายวัน")
-        summary.to_excel(w, index=False, sheet_name="สรุปสถิติ")
-    out.seek(0)
-    st.download_button("📥 ดาวน์โหลด Excel", out, f"Attendance_{selected_month}.xlsx", mime=EXCEL_MIME)
+        # pivot รายคน-รายเดือน (เลือกได้)
+        view_mode = st.radio(
+            "มุมมอง",
+            ["รวมทุกเดือน (ภาพรวม)", "แยกรายเดือน"],
+            horizontal=True,
+            key="att_view_mode",
+        )
+
+        if view_mode == "รวมทุกเดือน (ภาพรวม)":
+            summary = df_daily.pivot_table(
+                index="ชื่อพนักงาน", columns="สถานะย่อ", aggfunc="size", fill_value=0
+            )
+            for col in required_cols:
+                if col not in summary.columns:
+                    summary[col] = 0
+            summary = summary[[c for c in required_cols if c in summary.columns]].reset_index()
+
+            # เพิ่มคอลัมน์ % อัตราการมาปกติ
+            work_days = summary.get("มาปกติ", 0)
+            all_work  = summary[[c for c in ["มาปกติ","มาสาย","ออกก่อน","มาสายและออกก่อน","ขาดงาน"] if c in summary.columns]].sum(axis=1)
+            summary["% มาปกติ"] = (work_days / all_work.replace(0, 1) * 100).round(1).astype(str) + "%"
+
+            st.caption(f"📅 ช่วงที่เลือก: {selected_months[0]} ถึง {selected_months[-1]} ({len(selected_months)} เดือน)")
+            st.dataframe(summary, use_container_width=True, height=420)
+
+        else:  # แยกรายเดือน
+            summary_monthly = df_daily.pivot_table(
+                index=["ชื่อพนักงาน","เดือน"], columns="สถานะย่อ", aggfunc="size", fill_value=0
+            )
+            for col in required_cols:
+                if col not in summary_monthly.columns:
+                    summary_monthly[col] = 0
+            summary_monthly = summary_monthly[[c for c in required_cols if c in summary_monthly.columns]].reset_index()
+            st.caption(f"แสดงข้อมูลแยกทุกเดือน: {len(selected_months)} เดือน | {len(names_to_process)} คน")
+            st.dataframe(summary_monthly, use_container_width=True, height=480)
+
+        # ── ปุ่ม Export รวม ─────────────────────────────────────
+        st.divider()
+        out = io.BytesIO()
+        period_label = f"{selected_months[0]}_to_{selected_months[-1]}"
+        with pd.ExcelWriter(out, engine="xlsxwriter") as w:
+            df_daily.drop(columns=["สถานะย่อ"], errors="ignore").to_excel(
+                w, index=False, sheet_name="รายวัน"
+            )
+            if view_mode == "รวมทุกเดือน (ภาพรวม)":
+                summary.to_excel(w, index=False, sheet_name="สรุปภาพรวม")
+            else:
+                summary_monthly.to_excel(w, index=False, sheet_name="สรุปแยกเดือน")
+        out.seek(0)
+        st.download_button(
+            "📥 ดาวน์โหลด Excel",
+            out,
+            f"Attendance_{period_label}.xlsx",
+            mime=EXCEL_MIME,
+            use_container_width=True,
+        )
+
+    with att_tab3:
+        # ── กราฟแนวโน้มสถานะรายเดือน ─────────────────────────
+        st.subheader("📈 แนวโน้มสถานะรายเดือน")
+
+        trend_status_sel = st.multiselect(
+            "เลือกสถานะที่ต้องการดูในกราฟ",
+            required_cols,
+            default=["มาปกติ","มาสาย","ขาดงาน","ลา","ไปราชการ"],
+            key="trend_status_sel",
+        )
+
+        if trend_status_sel:
+            df_trend_att = (
+                df_daily[df_daily["สถานะย่อ"].isin(trend_status_sel)]
+                .groupby(["เดือน","สถานะย่อ"])
+                .size()
+                .reset_index(name="จำนวนวัน")
+            )
+            if not df_trend_att.empty:
+                trend_att_chart = (
+                    alt.Chart(df_trend_att)
+                    .mark_line(point=alt.OverlayMarkDef(size=60))
+                    .encode(
+                        x=alt.X("เดือน:O", title="เดือน", sort=None),
+                        y=alt.Y("จำนวนวัน:Q", title="จำนวนวัน-คน"),
+                        color=alt.Color("สถานะย่อ:N", legend=alt.Legend(orient="bottom")),
+                        tooltip=["เดือน","สถานะย่อ","จำนวนวัน"],
+                    )
+                    .properties(height=320, title="แนวโน้มสถานะรายเดือน")
+                )
+                st.altair_chart(trend_att_chart, use_container_width=True)
+
+                # Stacked bar เพื่อดูสัดส่วน
+                stack_chart = (
+                    alt.Chart(df_trend_att)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("เดือน:O", sort=None),
+                        y=alt.Y("จำนวนวัน:Q", stack="normalize", title="สัดส่วน (%)"),
+                        color=alt.Color("สถานะย่อ:N", legend=alt.Legend(orient="bottom")),
+                        tooltip=["เดือน","สถานะย่อ","จำนวนวัน"],
+                    )
+                    .properties(height=220, title="สัดส่วนสถานะแต่ละเดือน (%)")
+                )
+                st.altair_chart(stack_chart, use_container_width=True)
+            else:
+                st.info("ไม่มีข้อมูลสำหรับสถานะที่เลือก")
 
 # ============================================================
 # [R4] 📅 ปฏิทินกลาง — Heatmap
