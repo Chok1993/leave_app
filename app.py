@@ -1313,13 +1313,12 @@ elif menu == "📊 Dashboard & รายงาน":
             with late_col3:
                 sel_late_status = st.multiselect(
                     "สถานะที่ต้องการดู",
-                    ["มาสาย", "ต้องลาป่วย", "ลืมสแกน", "ขาดงาน"],
-                    default=["มาสาย", "ต้องลาป่วย"],
+                    ["มาสาย", "ลืมสแกน", "ขาดงาน"],
+                    default=["มาสาย"],
                     key="late_status",
                 )
 
-            LATE_CUT_L      = dt.time(8, 31)
-            SICK_CUT_L      = dt.time(10, 31)
+            LATE_CUT_L = dt.time(8, 31)
 
             df_att_y = df_att.copy()
             df_att_y["วันที่"] = pd.to_datetime(df_att_y["วันที่"], errors="coerce")
@@ -1337,22 +1336,15 @@ elif menu == "📊 Dashboard & รายงาน":
                     )
                     df_att_y = df_att_y[df_att_y["ชื่อ-สกุล"].isin(names_in_group)]
 
-                # คำนวณสถานะรายแถวด้วย rule ใหม่
                 def calc_late_status(row) -> str:
                     if pd.to_datetime(row["วันที่"], errors="coerce").weekday() >= 5:
                         return "วันหยุด"
                     t_in  = parse_time(row.get("เวลาเข้า", ""))
                     t_out = parse_time(row.get("เวลาออก",  ""))
-                    # กฎ 1: ไม่มีทั้งคู่
                     if not t_in and not t_out:
                         return "ขาดงาน"
-                    # กฎ 2-4: มีครึ่งเดียว หรือเข้า=ออก
                     if (t_in and not t_out) or (not t_in and t_out) or (t_in == t_out):
                         return "ลืมสแกน"
-                    # กฎ 6: เข้า ≥ 10:31
-                    if t_in >= SICK_CUT_L:
-                        return "ต้องลาป่วย"
-                    # กฎ 5: เข้า 08:31–10:30
                     if t_in >= LATE_CUT_L:
                         return "มาสาย"
                     return "มาปกติ"
@@ -1361,25 +1353,23 @@ elif menu == "📊 Dashboard & รายงาน":
                 df_att_y["เดือน"] = df_att_y["วันที่"].dt.strftime("%Y-%m")
 
                 # ── KPI row
-                total_days    = len(df_att_y[~df_att_y["สถานะสแกน"].isin(["วันหยุด"])])
-                total_late    = len(df_att_y[df_att_y["สถานะสแกน"] == "มาสาย"])
-                total_sick    = len(df_att_y[df_att_y["สถานะสแกน"] == "ต้องลาป่วย"])
-                total_forgot  = len(df_att_y[df_att_y["สถานะสแกน"] == "ลืมสแกน"])
-                total_absent  = len(df_att_y[df_att_y["สถานะสแกน"] == "ขาดงาน"])
-                late_rate     = f"{total_late/total_days*100:.1f}%" if total_days > 0 else "—"
+                total_days   = len(df_att_y[~df_att_y["สถานะสแกน"].isin(["วันหยุด"])])
+                total_late   = len(df_att_y[df_att_y["สถานะสแกน"] == "มาสาย"])
+                total_forgot = len(df_att_y[df_att_y["สถานะสแกน"] == "ลืมสแกน"])
+                total_absent = len(df_att_y[df_att_y["สถานะสแกน"] == "ขาดงาน"])
+                late_rate    = f"{total_late/total_days*100:.1f}%" if total_days > 0 else "—"
 
-                kc1, kc2, kc3, kc4, kc5 = st.columns(5)
+                kc1, kc2, kc3, kc4 = st.columns(4)
                 kc1.metric("⏰ มาสาย",       f"{total_late} ครั้ง",   f"อัตรา {late_rate}")
-                kc2.metric("🏥 ต้องลาป่วย",  f"{total_sick} ครั้ง")
-                kc3.metric("🔔 ลืมสแกน",     f"{total_forgot} ครั้ง")
-                kc4.metric("❌ ขาดงาน",      f"{total_absent} ครั้ง")
-                kc5.metric("📅 วันทำการรวม", f"{total_days} วัน")
+                kc2.metric("🔔 ลืมสแกน",     f"{total_forgot} ครั้ง")
+                kc3.metric("❌ ขาดงาน",      f"{total_absent} ครั้ง")
+                kc4.metric("📅 วันทำการรวม", f"{total_days} วัน")
 
                 st.divider()
 
                 # ── กราฟแนวโน้มรายเดือน
-                STATUS_DOMAIN = ["มาสาย","ต้องลาป่วย","ลืมสแกน","ขาดงาน"]
-                STATUS_RANGE  = ["#F59E0B","#EF4444","#8B5CF6","#991B1B"]
+                STATUS_DOMAIN = ["มาสาย", "ลืมสแกน", "ขาดงาน"]
+                STATUS_RANGE  = ["#F59E0B", "#8B5CF6", "#991B1B"]
 
                 df_late_trend = (
                     df_att_y[df_att_y["สถานะสแกน"].isin(STATUS_DOMAIN)]
@@ -1809,8 +1799,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 t_in  = parse_time(rec["เวลาเข้า"])
                 t_out = parse_time(rec["เวลาออก"])
 
-                LATE_CUTOFF     = dt.time(8, 31)   # เกินนี้ = มาสาย
-                SICK_LEAVE_CUT  = dt.time(10, 31)  # เกินนี้ = ต้องลาป่วย
+                LATE_CUTOFF = dt.time(8, 31)   # เกินนี้ = มาสาย
 
                 # ── กฎ 1: ไม่มีทั้งเข้าและออก
                 if not t_in and not t_out:
@@ -1824,11 +1813,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 elif t_in == t_out:
                     base_status = "ลืมสแกน"
 
-                # ── กฎ 6: เข้างาน 10:31 ขึ้นไป
-                elif t_in >= SICK_LEAVE_CUT:
-                    base_status = "ต้องลาป่วย"
-
-                # ── กฎ 5: เข้างาน 08:31–10:30
+                # ── กฎ 5: เข้างาน 08:31 ขึ้นไป
                 elif t_in >= LATE_CUTOFF:
                     base_status = "มาสาย"
 
@@ -1859,15 +1844,14 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
     df_daily["สถานะย่อ"] = df_daily["สถานะ"].apply(simplify_status)
 
     STATUS_COLORS = {
-        "มาปกติ":    "background-color:#d4edda",        # เขียว
-        "มาสาย":     "background-color:#ffeeba",        # เหลือง
-        "ต้องลาป่วย": "background-color:#fcd5b5",       # ส้ม
-        "ลืมสแกน":  "background-color:#ede9fe",        # ม่วงอ่อน
-        "ขาดงาน":   "background-color:#f5c6cb",        # ชมพูแดง
-        "ลา":        "background-color:#d1ecf1",        # ฟ้าอ่อน
-        "ไปราชการ":  "background-color:#fff3cd",        # เหลืองอ่อน
-        "วันหยุด":   "background-color:#e2e3e5",        # เทา
-        "HR คีย์แทน": "background-color:#d1fae5",      # เขียวมิ้นต์ (ใช้ match suffix)
+        "มาปกติ":    "background-color:#d4edda",
+        "มาสาย":     "background-color:#ffeeba",
+        "ลืมสแกน":  "background-color:#ede9fe",
+        "ขาดงาน":   "background-color:#f5c6cb",
+        "ลา":        "background-color:#d1ecf1",
+        "ไปราชการ":  "background-color:#fff3cd",
+        "วันหยุด":   "background-color:#e2e3e5",
+        "HR คีย์แทน": "background-color:#d1fae5",
     }
     def color_status(val):
         s = str(val)
@@ -1903,7 +1887,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
 
     with att_tab2:
         # ── สรุปภาพรวมหลายเดือน ───────────────────────────────
-        required_cols = ["มาปกติ","มาสาย","ต้องลาป่วย","ลืมสแกน","ขาดงาน","ลา","ไปราชการ","วันหยุด"]
+        required_cols = ["มาปกติ","มาสาย","ลืมสแกน","ขาดงาน","ลา","ไปราชการ","วันหยุด"]
 
         # pivot รายคน-รายเดือน (เลือกได้)
         view_mode = st.radio(
@@ -1924,7 +1908,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
 
             # เพิ่มคอลัมน์ % อัตราการมาปกติ
             work_days = summary.get("มาปกติ", 0)
-            all_work  = summary[[c for c in ["มาปกติ","มาสาย","ต้องลาป่วย","ลืมสแกน","ขาดงาน"] if c in summary.columns]].sum(axis=1)
+            all_work  = summary[[c for c in ["มาปกติ","มาสาย","ลืมสแกน","ขาดงาน"] if c in summary.columns]].sum(axis=1)
             summary["% มาปกติ"] = (work_days / all_work.replace(0, 1) * 100).round(1).astype(str) + "%"
 
             st.caption(f"📅 ช่วงที่เลือก: {selected_months[0]} ถึง {selected_months[-1]} ({len(selected_months)} เดือน)")
@@ -1969,7 +1953,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
         trend_status_sel = st.multiselect(
             "เลือกสถานะที่ต้องการดูในกราฟ",
             required_cols,
-            default=["มาปกติ","มาสาย","ต้องลาป่วย","ลืมสแกน","ขาดงาน","ลา","ไปราชการ"],
+            default=["มาปกติ","มาสาย","ลืมสแกน","ขาดงาน","ลา","ไปราชการ"],
             key="trend_status_sel",
         )
 
