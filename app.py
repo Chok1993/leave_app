@@ -262,7 +262,170 @@ def get_or_create_folder(folder_name: str, parent_id: str) -> Optional[str]:
         return None
 
 @st.cache_data(ttl=300)
-def read_excel_from_drive(filename: str) -> pd.DataFrame:
+def list_all_files_in_folder(parent_id: str = FOLDER_ID) -> List[dict]:
+    """ดึงรายชื่อไฟล์ทั้งหมดใน Drive folder (เฉพาะ .xlsx)"""
+    try:
+        res = service.files().list(
+            q=(
+                f"'{parent_id}' in parents and trashed=false "
+                f"and mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+            ),
+            fields="files(id, name, modifiedTime)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            orderBy="modifiedTime desc",
+        ).execute()
+        return res.get("files", [])
+    except Exception as e:
+        logger.error(f"list_all_files_in_folder: {e}")
+        return []
+
+# columns ที่ต้องการจาก travel — ใช้เพื่อ normalize
+TRAVEL_REQUIRED_COLS = ["ชื่อ-สกุล", "วันที่เริ่ม", "วันที่สิ้นสุด", "เรื่อง/กิจกรรม"]
+
+# ชื่อไฟล์ที่รู้แน่ว่าไม่ใช่ข้อมูลไปราชการ — ข้ามไปเลย
+_NON_TRAVEL_FILES = {
+    FILE_ATTEND, FILE_LEAVE, FILE_STAFF, FILE_NOTIFY,
+    FILE_HOLIDAYS, FILE_MANUAL_SCAN,
+    # ชื่อ pattern ที่เป็น backup
+}
+
+@st.cache_data(ttl=300)
+def load_all_travel() -> pd.DataFrame:
+    """
+    โหลดข้อมูลไปราชการจากทุกไฟล์ใน Drive folder
+    กลยุทธ์:
+      1. อ่านทุกไฟล์ .xlsx ใน folder
+      2. ข้ามไฟล์ที่รู้แน่ว่าไม่ใช่ travel (attendance, leave, staff ฯลฯ)
+      3. ข้ามไฟล์ backup (ชื่อขึ้นต้นด้วย BAK_)
+      4. ตรวจว่าไฟล์มีคอลัมน์ที่จำเป็น (ชื่อ-สกุล + วันที่เริ่ม + วันที่สิ้นสุด)
+      5. Normalize แล้วรวมเป็น DataFrame เดียว
+    """
+    frames: List[pd.DataFrame] = []
+    files = list_all_files_in_folder()
+
+    for f in files:
+        fname = f.get("name", "")
+
+        # ข้ามไฟล์ที่รู้ว่าไม่ใช่ travel
+        if fname in _NON_TRAVEL_FILES:
+            continue
+        # ข้าม backup files
+        if fname.startswith("BAK_"):
+            continue
+        # ข้าม Attachments folder (ไม่ใช่ xlsx แต่ query จำกัดแล้ว)
+
+        try:
+            df_raw = read_excel_from_drive(fname)
+            if df_raw.empty:
+                continue
+
+            # ตรวจว่ามีคอลัมน์ที่จำเป็นหรือไม่
+            has_name = "ชื่อ-สกุล" in df_raw.columns or "ชื่อพนักงาน" in df_raw.columns or "ชื่อ" in df_raw.columns
+            has_start = "วันที่เริ่ม" in df_raw.columns
+            has_end   = "วันที่สิ้นสุด" in df_raw.columns
+
+            if not (has_name and has_start and has_end):
+                continue  # ไม่ใช่ไฟล์ travel — ข้าม
+
+            df_norm = df_raw.copy()
+
+            # Normalize ชื่อ column
+            for alt in ["ชื่อพนักงาน", "ชื่อ", "fullname"]:
+                if alt in df_norm.columns and "ชื่อ-สกุล" not in df_norm.columns:
+                    df_norm.rename(columns={alt: "ชื่อ-สกุล"}, inplace=True)
+
+            # Normalize dates
+            df_norm["วันที่เริ่ม"]   = pd.to_datetime(df_norm["วันที่เริ่ม"],   errors="coerce").dt.normalize()
+            df_norm["วันที่สิ้นสุด"] = pd.to_datetime(df_norm["วันที่สิ้นสุด"], errors="coerce").dt.normalize()
+
+            # ตรวจ activity_log — ดึงเฉพาะแถว ประเภท=ไปราชการ แล้วแปลง schema
+            if fname == FILE_NOTIFY or (
+                "ประเภท" in df_norm.columns and "รายละเอียด" in df_norm.columns
+            ):
+                # activity_log มี schema ต่างกัน — ต้อง parse ต่างหาก
+                df_travel_from_log = _extract_travel_from_activity_log(df_norm)
+                if not df_travel_from_log.empty:
+                    df_travel_from_log["_source_file"] = fname
+                    frames.append(df_travel_from_log)
+                continue
+
+            # เพิ่ม metadata
+            df_norm["_source_file"] = fname
+            # เติม column ที่อาจขาด
+            if "เรื่อง/กิจกรรม" not in df_norm.columns:
+                df_norm["เรื่อง/กิจกรรม"] = fname.replace(".xlsx", "")
+
+            # drop แถว NaT
+            df_norm = df_norm.dropna(subset=["ชื่อ-สกุล", "วันที่เริ่ม", "วันที่สิ้นสุด"])
+            df_norm["ชื่อ-สกุล"] = df_norm["ชื่อ-สกุล"].astype(str).str.strip()
+            df_norm = df_norm[df_norm["ชื่อ-สกุล"].str.lower() != "nan"]
+
+            if not df_norm.empty:
+                frames.append(df_norm[TRAVEL_REQUIRED_COLS + ["_source_file"]])
+
+        except Exception as e:
+            logger.warning(f"load_all_travel: skip {fname} — {e}")
+            continue
+
+    if not frames:
+        return pd.DataFrame(columns=TRAVEL_REQUIRED_COLS + ["_source_file"])
+
+    df_all = pd.concat(frames, ignore_index=True)
+    # dedup: คน+วันเริ่ม+วันสิ้นสุด เหมือนกัน ให้เอาจาก travel_report ก่อน แล้วค่อยไฟล์อื่น
+    df_all["_rank"] = df_all["_source_file"].apply(
+        lambda x: 0 if x == FILE_TRAVEL else 1
+    )
+    df_all = (
+        df_all.sort_values(["ชื่อ-สกุล", "วันที่เริ่ม", "_rank"])
+        .drop_duplicates(subset=["ชื่อ-สกุล", "วันที่เริ่ม", "วันที่สิ้นสุด"], keep="first")
+        .drop(columns=["_rank"])
+        .reset_index(drop=True)
+    )
+    return df_all
+
+
+def _extract_travel_from_activity_log(df_log: pd.DataFrame) -> pd.DataFrame:
+    """
+    แปลงข้อมูลจาก activity_log.xlsx ที่มี schema:
+      [Timestamp, ประเภท, รายละเอียด, ผู้เกี่ยวข้อง]
+    เฉพาะแถว ประเภท == "ไปราชการ" → แปลงเป็น travel schema
+    รูปแบบ รายละเอียด: "<project> @ <location>"
+    รูปแบบ ผู้เกี่ยวข้อง: "นาย ก, นาย ข, และอีก N คน"
+
+    หมายเหตุ: activity_log ไม่มี วันที่เริ่ม/สิ้นสุด → ใช้ Timestamp เป็น proxy (วันเดียว)
+    """
+    if df_log.empty or "ประเภท" not in df_log.columns:
+        return pd.DataFrame()
+
+    df_tr = df_log[df_log["ประเภท"] == "ไปราชการ"].copy()
+    if df_tr.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, row in df_tr.iterrows():
+        try:
+            ts = pd.to_datetime(row.get("Timestamp"), errors="coerce")
+            if pd.isna(ts):
+                continue
+            d = ts.normalize()
+            detail   = str(row.get("รายละเอียด", ""))
+            involved = str(row.get("ผู้เกี่ยวข้อง", ""))
+            project  = detail.split("@")[0].strip() if "@" in detail else detail
+
+            # แยกชื่อ (คั่นด้วย ",")
+            names = [n.strip() for n in involved.split(",") if n.strip() and "และอีก" not in n]
+            for name in names:
+                rows.append({
+                    "ชื่อ-สกุล":       name,
+                    "วันที่เริ่ม":      d,
+                    "วันที่สิ้นสุด":    d,   # log ไม่มีวันสิ้นสุด → ใช้วันเดียวกัน
+                    "เรื่อง/กิจกรรม":  project,
+                })
+        except Exception:
+            continue
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
     for attempt in range(3):
         try:
             fid = get_file_id(filename)
@@ -1175,15 +1338,29 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
     with st.spinner("กำลังโหลดข้อมูล..."):
         df_att    = read_excel_from_drive(FILE_ATTEND)
         df_leave  = read_excel_from_drive(FILE_LEAVE)
-        df_travel = read_excel_from_drive(FILE_TRAVEL)
         df_staff  = read_excel_from_drive(FILE_STAFF)
-        df_leave, df_travel, df_att = preprocess_dataframes(df_leave, df_travel, df_att)
-
-        # [MS] รวมข้อมูลลืมสแกนนิ้ว (แยกไฟล์) เข้ากับ attendance ก่อน process
+        # [MS] รวม manual scans
         df_manual = load_manual_scans()
         df_att    = merge_attendance_with_manual(df_att, df_manual)
 
-        all_names = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, df_att)
+        # โหลด travel จากทุกไฟล์ใน Drive (travel_report + ไฟล์อื่นๆ ที่มี schema ตรง)
+        df_travel_all = load_all_travel()
+
+        # preprocess leave + att (travel ถูก normalize แล้วใน load_all_travel)
+        _, df_travel_pp, df_att = preprocess_dataframes(df_leave, df_travel_all, df_att)
+        df_leave, _, _ = preprocess_dataframes(df_leave, pd.DataFrame(), pd.DataFrame())
+
+        all_names = get_active_staff(df_staff) or get_all_names_fallback(
+            df_leave, df_travel_all, df_att
+        )
+
+    # แสดงแหล่งข้อมูลที่โหลดมา
+    travel_sources = df_travel_all["_source_file"].unique().tolist() if not df_travel_all.empty and "_source_file" in df_travel_all.columns else [FILE_TRAVEL]
+    n_travel = len(df_travel_all)
+    st.caption(
+        f"📂 ข้อมูลไปราชการ: **{n_travel} รายการ** จาก **{len(travel_sources)} ไฟล์** "
+        f"({', '.join(travel_sources)})"
+    )
 
     if df_att.empty:
         months_att = set()
@@ -1192,18 +1369,16 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
         df_att["เดือน"] = df_att["วันที่"].dt.strftime("%Y-%m")
         months_att = set(df_att["เดือน"].dropna().unique().tolist())
 
-    # รวมเดือนจาก travel และ leave ด้วย เพื่อไม่ให้หายเมื่อไม่มีสแกนนิ้ว
+    # รวมเดือนจาก travel (ทุกไฟล์) และ leave ด้วย
     months_travel: set = set()
-    if not df_travel.empty:
+    if not df_travel_all.empty:
         for col in ["วันที่เริ่ม", "วันที่สิ้นสุด"]:
-            if col in df_travel.columns:
-                # ขยาย range วันที่เริ่ม–สิ้นสุดออกเป็นรายเดือน
-                for _, row in df_travel.iterrows():
-                    try:
-                        s = pd.to_datetime(row[col]).to_period("M")
-                        months_travel.add(str(s))
-                    except Exception:
-                        pass
+            if col in df_travel_all.columns:
+                months_travel.update(
+                    df_travel_all[col].dropna()
+                    .pipe(lambda s: pd.to_datetime(s, errors="coerce"))
+                    .dt.to_period("M").astype(str).unique().tolist()
+                )
 
     months_leave: set = set()
     if not df_leave.empty and "วันที่เริ่ม" in df_leave.columns:
@@ -1304,8 +1479,15 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
         df_months_att = df_att[df_att["เดือน"].isin(selected_months)].copy()
     else:
         df_months_att = pd.DataFrame()
+
     if not df_months_att.empty:
         df_months_att[name_col] = df_months_att[name_col].astype(str).str.strip()
+        # FIX: บังคับ normalize วันที่ให้เป็น datetime ก่อนใช้ .dt.date
+        df_months_att["วันที่"] = pd.to_datetime(
+            df_months_att["วันที่"], errors="coerce"
+        ).dt.normalize()
+        # สร้าง date column แยกต่างหากเพื่อ lookup เร็วขึ้น + ไม่ต้องใช้ .dt.date ใน loop
+        df_months_att["_date"] = df_months_att["วันที่"].dt.date
 
     WORK_START = dt.time(8, 30)
     WORK_END   = dt.time(16, 30)
@@ -1319,36 +1501,41 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
         hdf = load_holidays_all(yr)
         holiday_df_lookup = pd.concat([holiday_df_lookup, hdf], ignore_index=True)
 
-    # ── Pre-index travel & leave รายคน (ทำครั้งเดียวก่อน loop หลัก) ─
-    # เพื่อหลีกเลี่ยงการ filter DataFrame ซ้ำทุกวันทุกคน
-    # แปลง date columns ให้เป็น dt.date ก่อนเก็บ
-    travel_index: Dict[str, List[tuple]] = {}   # name → [(start_date, end_date, project)]
-    if not df_travel.empty and "ชื่อ-สกุล" in df_travel.columns:
-        for _, row in df_travel.iterrows():
-            name_t = str(row.get("ชื่อ-สกุล", "")).strip()
+    # ── Pre-index travel รายคน (จากทุกไฟล์) ─────────────────
+    travel_index: Dict[str, List[tuple]] = {}
+    if not df_travel_pp.empty and "ชื่อ-สกุล" in df_travel_pp.columns:
+        df_tr = df_travel_pp.copy()
+        df_tr["วันที่เริ่ม"]   = pd.to_datetime(df_tr.get("วันที่เริ่ม"),   errors="coerce").dt.normalize()
+        df_tr["วันที่สิ้นสุด"] = pd.to_datetime(df_tr.get("วันที่สิ้นสุด"), errors="coerce").dt.normalize()
+        df_tr["ชื่อ-สกุล"]    = df_tr["ชื่อ-สกุล"].astype(str).str.strip()
+        df_tr = df_tr.dropna(subset=["วันที่เริ่ม", "วันที่สิ้นสุด"])
+        for _, row in df_tr.iterrows():
+            name_t = row["ชื่อ-สกุล"]
             if not name_t or name_t.lower() == "nan":
                 continue
-            try:
-                s = pd.to_datetime(row.get("วันที่เริ่ม")).date()
-                e = pd.to_datetime(row.get("วันที่สิ้นสุด")).date()
-                proj = str(row.get("เรื่อง/กิจกรรม", "ไปราชการ"))
-                travel_index.setdefault(name_t, []).append((s, e, proj))
-            except Exception:
-                pass
+            s    = row["วันที่เริ่ม"].date()
+            e    = row["วันที่สิ้นสุด"].date()
+            proj = str(row.get("เรื่อง/กิจกรรม", "ไปราชการ")).strip() or "ไปราชการ"
+            # เพิ่ม source file ไว้ด้วยเพื่อ debug ถ้าจำเป็น
+            src  = str(row.get("_source_file", FILE_TRAVEL))
+            travel_index.setdefault(name_t, []).append((s, e, proj, src))
 
-    leave_index: Dict[str, List[tuple]] = {}    # name → [(start_date, end_date, leave_type)]
+    # ── Pre-index leave รายคน ─────────────────────────────────
+    leave_index: Dict[str, List[tuple]] = {}
     if not df_leave.empty and "ชื่อ-สกุล" in df_leave.columns:
-        for _, row in df_leave.iterrows():
-            name_l = str(row.get("ชื่อ-สกุล", "")).strip()
+        df_lv = df_leave.copy()
+        df_lv["วันที่เริ่ม"]   = pd.to_datetime(df_lv.get("วันที่เริ่ม"),   errors="coerce").dt.normalize()
+        df_lv["วันที่สิ้นสุด"] = pd.to_datetime(df_lv.get("วันที่สิ้นสุด"), errors="coerce").dt.normalize()
+        df_lv["ชื่อ-สกุล"]    = df_lv["ชื่อ-สกุล"].astype(str).str.strip()
+        df_lv = df_lv.dropna(subset=["วันที่เริ่ม", "วันที่สิ้นสุด"])
+        for _, row in df_lv.iterrows():
+            name_l = row["ชื่อ-สกุล"]
             if not name_l or name_l.lower() == "nan":
                 continue
-            try:
-                s = pd.to_datetime(row.get("วันที่เริ่ม")).date()
-                e = pd.to_datetime(row.get("วันที่สิ้นสุด")).date()
-                ltype = str(row.get("ประเภทการลา", "ลา"))
-                leave_index.setdefault(name_l, []).append((s, e, ltype))
-            except Exception:
-                pass
+            s     = row["วันที่เริ่ม"].date()
+            e     = row["วันที่สิ้นสุด"].date()
+            ltype = str(row.get("ประเภทการลา", "ลา")).strip() or "ลา"
+            leave_index.setdefault(name_l, []).append((s, e, ltype))
 
     # ── คำนวณข้อมูลรายวัน ────────────────────────────────────
     records = []
@@ -1365,11 +1552,11 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 "เวลาออก":      "",
                 "สถานะ":        "",
             }
-            # ── lookup สแกน (เทียบด้วย date object)
+            # ── lookup สแกน (ใช้ _date column ที่ pre-compute แล้ว ไม่เรียก .dt.date ใน loop)
             att = (
                 df_months_att[
                     (df_months_att[name_col] == name)
-                    & (df_months_att["วันที่"].dt.date == d_date)
+                    & (df_months_att["_date"] == d_date)
                 ]
                 if not df_months_att.empty else pd.DataFrame()
             )
@@ -1385,9 +1572,9 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                     in_leave, leave_type = True, ltype
                     break
 
-            # ── ตรวจไปราชการ (ใช้ pre-index) + เก็บชื่อโครงการ
+            # ── ตรวจไปราชการ (ใช้ pre-index จากทุกไฟล์) + เก็บชื่อโครงการ
             in_travel, travel_project = False, ""
-            for ts, te, proj in travel_index.get(name, []):
+            for ts, te, proj, _src in travel_index.get(name, []):
                 if ts <= d_date <= te:
                     in_travel, travel_project = True, proj
                     break
