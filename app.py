@@ -601,9 +601,18 @@ def preprocess_dataframes(df_leave, df_travel, df_att):
     แก้โดย assign ตรงๆ ทีละตัวแทน
     """
     # Rename columns (df_att อาจมีชื่อคอลัมน์ต่างกัน)
-    for old, new in COLUMN_MAPPING.items():
-        if not df_att.empty and old in df_att.columns:
-            df_att = df_att.rename(columns={old: new})
+    # FIX: ถ้า df_att มีทั้ง "ชื่อพนักงาน" (col A) และ "ชื่อ-สกุล" (col H) พร้อมกัน
+    #      ให้ใช้ "ชื่อพนักงาน" เป็นหลัก แล้วลบ "ชื่อ-สกุล" เดิมออกก่อน rename
+    if not df_att.empty:
+        for old, new in COLUMN_MAPPING.items():
+            if old in df_att.columns:
+                if new in df_att.columns:
+                    # มีทั้งสอง column — ลบ new เดิมออกก่อน (old จะถูก rename เป็น new)
+                    df_att = df_att.drop(columns=[new])
+                df_att = df_att.rename(columns={old: new})
+        # ป้องกัน duplicate columns ที่อาจยังหลงเหลือ
+        if df_att.columns.duplicated().any():
+            df_att = df_att.loc[:, ~df_att.columns.duplicated()].copy()
     # Normalize dates
     for col in ["วันที่เริ่ม", "วันที่สิ้นสุด"]:
         df_leave  = normalize_date_col(df_leave,  col)
@@ -633,17 +642,53 @@ def count_weekdays(start_date, end_date, extra_holidays: Optional[List[dt.date]]
     return base
 
 def parse_time(val) -> Optional[dt.time]:
-    """แปลง value หลายรูปแบบเป็น time object — คืน None ถ้าแปลงไม่ได้"""
+    """
+    แปลง value หลายรูปแบบเป็น time object — คืน None ถ้าแปลงไม่ได้
+    รองรับ: dt.time, dt.datetime, pd.Timedelta, str ("HH:MM", "HH:MM:SS"),
+            float (Excel serial fraction), "6:33:00 PM" (12h format)
+    """
     if val is None or val == "":
         return None
-    if isinstance(val, float) and np.isnan(val):
-        return None
+    if isinstance(val, float):
+        if np.isnan(val):
+            return None
+        # Excel เก็บเวลาเป็น fraction ของวัน (0.375 = 09:00)
+        try:
+            total_sec = int(round(val * 86400))
+            return dt.time(total_sec // 3600, (total_sec % 3600) // 60, total_sec % 60)
+        except Exception:
+            return None
     if isinstance(val, dt.time):
         return val
-    try:
-        return pd.to_datetime(str(val)).time()
-    except Exception:
+    if isinstance(val, dt.datetime):
+        return val.time()
+    # Timedelta (pandas อ่านเวลาจาก Excel บางครั้งได้เป็น timedelta)
+    if isinstance(val, (pd.Timedelta, dt.timedelta)):
+        try:
+            total_sec = int(val.total_seconds())
+            if total_sec < 0:
+                return None
+            return dt.time(total_sec // 3600 % 24, (total_sec % 3600) // 60, total_sec % 60)
+        except Exception:
+            return None
+    # String formats
+    s = str(val).strip()
+    if not s or s.lower() in ("nat", "none", "nan", ""):
         return None
+    try:
+        return pd.to_datetime(s).time()
+    except Exception:
+        pass
+    # ลอง HH:MM หรือ HH:MM:SS โดยตรง
+    try:
+        parts = s.split(":")
+        if len(parts) >= 2:
+            h, m = int(parts[0]), int(parts[1])
+            sc = int(float(parts[2])) if len(parts) > 2 else 0
+            return dt.time(h % 24, m, sc)
+    except Exception:
+        pass
+    return None
 
 # ===========================
 # [H1] Special Holiday Helpers
