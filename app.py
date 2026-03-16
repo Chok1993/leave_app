@@ -578,20 +578,23 @@ def normalize_date_col(df: pd.DataFrame, col: str) -> pd.DataFrame:
 
 def clean_names(df: pd.DataFrame, col: str) -> pd.DataFrame:
     """
-    Strip whitespace จาก column ชื่อ
-    FIX: ป้องกัน duplicate columns (df[col] คืน DataFrame แทน Series → AttributeError)
+    Strip + normalize whitespace จาก column ชื่อ
+    FIX 1: ป้องกัน duplicate columns
+    FIX 2: normalize internal whitespace (เช่น double space)
     """
     if df.empty or col not in df.columns:
         return df
-    # ถ้ามี column ชื่อซ้ำ (เช่น อ่านจาก Excel ที่มีหัว column ซ้ำ) ให้ drop duplicate ก่อน
     if df.columns.duplicated().any():
         df = df.loc[:, ~df.columns.duplicated()].copy()
-    # ตอนนี้ df[col] ต้องเป็น Series แน่นอน
     series = df[col]
     if isinstance(series, pd.DataFrame):
-        # กรณี edge case ที่ยังเป็น DataFrame อยู่ให้เอา column แรก
         series = series.iloc[:, 0]
-    df[col] = series.astype(str).str.strip()
+    # strip + collapse internal whitespace
+    df[col] = (
+        series.astype(str)
+        .str.strip()
+        .str.replace(r"\s+", " ", regex=True)
+    )
     return df
 
 def preprocess_dataframes(df_leave, df_travel, df_att):
@@ -675,17 +678,30 @@ def parse_time(val) -> Optional[dt.time]:
     s = str(val).strip()
     if not s or s.lower() in ("nat", "none", "nan", ""):
         return None
+    # "0 days HH:MM:SS" pattern จาก pd.Timedelta ที่ถูก str() แล้ว
+    # หรือ "HH:MM:SS AM/PM" format
+    import re as _re
+    m = _re.search(r"(\d+):(\d{2}):?(\d{2})?(?:\s*(AM|PM))?", s, _re.IGNORECASE)
+    if m:
+        h  = int(m.group(1))
+        mn = int(m.group(2))
+        sc = int(m.group(3)) if m.group(3) else 0
+        meridiem = (m.group(4) or "").upper()
+        # handle "X days" prefix
+        d_match = _re.search(r"(\d+)\s+day", s, _re.IGNORECASE)
+        if d_match:
+            h += int(d_match.group(1)) * 24
+        # handle AM/PM
+        if meridiem == "PM" and h < 12:
+            h += 12
+        elif meridiem == "AM" and h == 12:
+            h = 0
+        try:
+            return dt.time(h % 24, mn, sc)
+        except Exception:
+            pass
     try:
         return pd.to_datetime(s).time()
-    except Exception:
-        pass
-    # ลอง HH:MM หรือ HH:MM:SS โดยตรง
-    try:
-        parts = s.split(":")
-        if len(parts) >= 2:
-            h, m = int(parts[0]), int(parts[1])
-            sc = int(float(parts[2])) if len(parts) > 2 else 0
-            return dt.time(h % 24, m, sc)
     except Exception:
         pass
     return None
@@ -962,9 +978,8 @@ def load_manual_scans() -> pd.DataFrame:
 
 def merge_attendance_with_manual(df_att: pd.DataFrame, df_manual: pd.DataFrame) -> pd.DataFrame:
     """
-    รวม attendance_report.xlsx + manual_scan.xlsx
-    กฎ: ถ้าวันเดียวกัน-คนเดียวกันมีอยู่ใน df_att แล้ว → ไม่เอาของ manual ซ้ำ
-        ถ้า df_att ไม่มี → เอาของ manual มาเติม
+    รวม attendance (post-preprocess) + manual scans
+    เรียกหลัง preprocess_dataframes เสมอ เพื่อให้ df_att มี "ชื่อ-สกุล" ถูกต้อง
     """
     if df_manual.empty:
         return df_att
@@ -977,22 +992,35 @@ def merge_attendance_with_manual(df_att: pd.DataFrame, df_manual: pd.DataFrame) 
     df_att_work    = df_att.copy()
     df_manual_work = df_manual.copy()
 
+    # หา name column ใน df_att (หลัง preprocess ควรเป็น "ชื่อ-สกุล" แล้ว)
+    att_name_col = next(
+        (c for c in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if c in df_att_work.columns),
+        None,
+    )
+    if att_name_col is None:
+        # ไม่มี name column เลย — return att เดิม
+        return df_att_work
+
+    # ถ้าชื่อ column ไม่ใช่ "ชื่อ-สกุล" ให้ rename ก่อน
+    if att_name_col != "ชื่อ-สกุล":
+        df_att_work = df_att_work.rename(columns={att_name_col: "ชื่อ-สกุล"})
+
     df_att_work["วันที่"]    = pd.to_datetime(df_att_work["วันที่"],    errors="coerce").dt.normalize()
     df_manual_work["วันที่"] = pd.to_datetime(df_manual_work["วันที่"], errors="coerce").dt.normalize()
-    df_att_work["ชื่อ-สกุล"]    = df_att_work["ชื่อ-สกุล"].astype(str).str.strip()
-    df_manual_work["ชื่อ-สกุล"] = df_manual_work["ชื่อ-สกุล"].astype(str).str.strip()
 
-    # สร้าง key สำหรับ dedup: "ชื่อ|วันที่"
+    # normalize ชื่อ (strip + collapse whitespace)
+    df_att_work["ชื่อ-สกุล"]    = df_att_work["ชื่อ-สกุล"].astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
+    df_manual_work["ชื่อ-สกุล"] = df_manual_work["ชื่อ-สกุล"].astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
+
+    # dedup key: "ชื่อ|YYYY-MM-DD"
     att_keys = set(
-        df_att_work.apply(
-            lambda r: f"{r['ชื่อ-สกุล']}|{r['วันที่']}", axis=1
-        ).tolist()
+        df_att_work["ชื่อ-สกุล"].astype(str) + "|" +
+        df_att_work["วันที่"].astype(str)
     )
-    # เอาเฉพาะ manual rows ที่ยังไม่มีใน attendance จริง
+
     df_manual_new = df_manual_work[
-        df_manual_work.apply(
-            lambda r: f"{r['ชื่อ-สกุล']}|{r['วันที่']}" not in att_keys, axis=1
-        )
+        ~(df_manual_work["ชื่อ-สกุล"].astype(str) + "|" +
+          df_manual_work["วันที่"].astype(str)).isin(att_keys)
     ].copy()
 
     if df_manual_new.empty:
@@ -1566,16 +1594,15 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
         df_att    = read_excel_from_drive(FILE_ATTEND)
         df_leave  = read_excel_from_drive(FILE_LEAVE)
         df_staff  = read_excel_from_drive(FILE_STAFF)
-        # [MS] รวม manual scans
-        df_manual = load_manual_scans()
-        df_att    = merge_attendance_with_manual(df_att, df_manual)
-
-        # โหลด travel จากทุกไฟล์ใน Drive (travel_report + ไฟล์อื่นๆ ที่มี schema ตรง)
         df_travel_all = load_all_travel()
 
-        # preprocess leave + att (travel ถูก normalize แล้วใน load_all_travel)
-        _, df_travel_pp, df_att = preprocess_dataframes(df_leave, df_travel_all, df_att)
-        df_leave, _, _ = preprocess_dataframes(df_leave, pd.DataFrame(), pd.DataFrame())
+        # ── ขั้นตอนที่ 1: preprocess ก่อนเสมอ (rename + normalize dates + clean names)
+        # ต้องทำก่อน merge เพื่อให้ชื่อ column ถูกต้อง
+        df_leave, df_travel_pp, df_att = preprocess_dataframes(df_leave, df_travel_all, df_att)
+
+        # ── ขั้นตอนที่ 2: merge manual scans (ตอนนี้ df_att มี "ชื่อ-สกุล" ถูกต้องแล้ว)
+        df_manual = load_manual_scans()
+        df_att    = merge_attendance_with_manual(df_att, df_manual)
 
         all_names = get_active_staff(df_staff) or get_all_names_fallback(
             df_leave, df_travel_all, df_att
@@ -1681,11 +1708,14 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
 
     # ── กรองชื่อตามกลุ่มงาน ────────────────────────────────
     df_staff_att = read_excel_from_drive(FILE_STAFF)
-    names_to_process = selected_names or all_names
+    # normalize names ก่อนเปรียบเทียบ
+    names_to_process = [
+        str(n).strip().replace("  ", " ") for n in (selected_names or all_names)
+    ]
     if sel_att_group != "ทุกกลุ่ม" and not df_staff_att.empty and "กลุ่มงาน" in df_staff_att.columns:
         grp_set = set(
             df_staff_att[df_staff_att["กลุ่มงาน"] == sel_att_group]["ชื่อ-สกุล"]
-            .astype(str).str.strip().tolist()
+            .astype(str).str.strip().str.replace(r"\s+", " ", regex=True).tolist()
         )
         names_to_process = [n for n in names_to_process if n in grp_set]
 
@@ -1708,13 +1738,27 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
         df_months_att = pd.DataFrame()
 
     if not df_months_att.empty:
-        df_months_att[name_col] = df_months_att[name_col].astype(str).str.strip()
-        # FIX: บังคับ normalize วันที่ให้เป็น datetime ก่อนใช้ .dt.date
+        # ตรวจ name_col อีกครั้งใน df_months_att (อาจต่างจาก df_att ถ้า merge เพิ่ม columns)
+        actual_name_col = next(
+            (c for c in ["ชื่อ-สกุล", "ชื่อพนักงาน", "ชื่อ"] if c in df_months_att.columns),
+            name_col,
+        )
+        if actual_name_col != "ชื่อ-สกุล" and actual_name_col in df_months_att.columns:
+            df_months_att = df_months_att.rename(columns={actual_name_col: "ชื่อ-สกุล"})
+
+        # normalize ชื่อ: strip + collapse whitespace
+        df_months_att["ชื่อ-สกุล"] = (
+            df_months_att["ชื่อ-สกุล"]
+            .astype(str).str.strip()
+            .str.replace(r"\s+", " ", regex=True)
+        )
+        # normalize วันที่
         df_months_att["วันที่"] = pd.to_datetime(
             df_months_att["วันที่"], errors="coerce"
         ).dt.normalize()
-        # สร้าง date column แยกต่างหากเพื่อ lookup เร็วขึ้น + ไม่ต้องใช้ .dt.date ใน loop
         df_months_att["_date"] = df_months_att["วันที่"].dt.date
+        # ใช้ "ชื่อ-สกุล" เสมอหลัง normalize
+        name_col = "ชื่อ-สกุล"
 
     WORK_START = dt.time(8, 30)
     WORK_END   = dt.time(16, 30)
