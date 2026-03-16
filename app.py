@@ -1184,6 +1184,8 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
     if df_att.empty:
         months = [dt.datetime.now().strftime("%Y-%m")]
     else:
+        # assign เดือน หลัง merge แล้ว (ถ้า assign ก่อน manual จะไม่มีคอลัมน์นี้)
+        df_att["วันที่"] = pd.to_datetime(df_att["วันที่"], errors="coerce").dt.normalize()
         df_att["เดือน"] = df_att["วันที่"].dt.strftime("%Y-%m")
         months = sorted(df_att["เดือน"].dropna().unique().tolist()) or [dt.datetime.now().strftime("%Y-%m")]
 
@@ -1329,16 +1331,27 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 row = att.iloc[0]
                 rec["เวลาเข้า"] = row.get("เวลาเข้า", "")
                 rec["เวลาออก"] = row.get("เวลาออก", "")
+                # ตรวจว่าแถวนี้มาจาก Admin คีย์แทน (manual_scan.xlsx) หรือสแกนจริง
+                is_manual = str(row.get("_source", "")).strip() == "manual"
+
                 t_in  = parse_time(rec["เวลาเข้า"])
                 t_out = parse_time(rec["เวลาออก"])
+
                 if not t_in and not t_out:
-                    rec["สถานะ"] = "ขาดงาน"
+                    base_status = "ลืมสแกน"
+                elif t_in and not t_out:
+                    base_status = "ลืมสแกนออก"
+                elif not t_in and t_out:
+                    base_status = "ลืมสแกนเข้า"
                 elif t_in and t_in > WORK_START:
-                    rec["สถานะ"] = "มาสายและออกก่อน" if (not t_out or t_out < WORK_END) else "มาสาย"
+                    base_status = "มาสายและออกก่อน" if (not t_out or t_out < WORK_END) else "มาสาย"
                 elif not t_out or t_out < WORK_END:
-                    rec["สถานะ"] = "ออกก่อน"
+                    base_status = "ออกก่อน"
                 else:
-                    rec["สถานะ"] = "มาปกติ"
+                    base_status = "มาปกติ"
+
+                # ถ้า HR คีย์แทน ให้ต่อท้าย "(HR คีย์แทน)" เพื่อแยกแยะจากสแกนจริง
+                rec["สถานะ"] = f"{base_status} (HR คีย์แทน)" if is_manual else base_status
             else:
                 rec["สถานะ"] = "วันหยุด" if d.weekday() >= 5 else "ขาดงาน"
             records.append(rec)
@@ -1347,18 +1360,31 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
     df_daily = pd.DataFrame(records).sort_values(["ชื่อพนักงาน","วันที่"])
 
     def simplify_status(s):
-        return "ลา" if isinstance(s, str) and s.startswith("ลา") else s
+        if isinstance(s, str):
+            if s.startswith("ลา"):
+                return "ลา"
+            if s.startswith("วันหยุด"):
+                return "วันหยุด"
+            if "HR คีย์แทน" in s:
+                return "HR คีย์แทน"
+            if s.startswith("ลืมสแกน"):
+                return "ลืมสแกน"
+        return s
     df_daily["สถานะย่อ"] = df_daily["สถานะ"].apply(simplify_status)
 
     STATUS_COLORS = {
-        "มาปกติ": "background-color:#d4edda",
-        "มาสาย": "background-color:#ffeeba",
-        "ออกก่อน": "background-color:#f8d7da",
+        "มาปกติ":           "background-color:#d4edda",
+        "มาสาย":            "background-color:#ffeeba",
+        "ออกก่อน":          "background-color:#f8d7da",
         "มาสายและออกก่อน": "background-color:#fcd5b5",
-        "ลา": "background-color:#d1ecf1",
-        "ไปราชการ": "background-color:#fff3cd",
-        "วันหยุด": "background-color:#e2e3e5",
-        "ขาดงาน": "background-color:#f5c6cb",
+        "ลา":               "background-color:#d1ecf1",
+        "ไปราชการ":         "background-color:#fff3cd",
+        "วันหยุด":          "background-color:#e2e3e5",
+        "ขาดงาน":           "background-color:#f5c6cb",
+        "ลืมสแกน":         "background-color:#ede9fe",
+        "ลืมสแกนเข้า":     "background-color:#ede9fe",
+        "ลืมสแกนออก":      "background-color:#ede9fe",
+        "HR คีย์แทน":      "background-color:#d1fae5",  # เขียวมิ้นต์ — แยกชัดจากสแกนปกติ
     }
     def color_status(val):
         for k, v in STATUS_COLORS.items():
@@ -1390,7 +1416,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
 
     with att_tab2:
         # ── สรุปภาพรวมหลายเดือน ───────────────────────────────
-        required_cols = ["มาปกติ","มาสาย","ออกก่อน","มาสายและออกก่อน","ลา","ไปราชการ","วันหยุด","ขาดงาน"]
+        required_cols = ["มาปกติ","มาสาย","ออกก่อน","มาสายและออกก่อน","ลา","ไปราชการ","วันหยุด","ขาดงาน","ลืมสแกน","HR คีย์แทน"]
 
         # pivot รายคน-รายเดือน (เลือกได้)
         view_mode = st.radio(
@@ -1411,7 +1437,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
 
             # เพิ่มคอลัมน์ % อัตราการมาปกติ
             work_days = summary.get("มาปกติ", 0)
-            all_work  = summary[[c for c in ["มาปกติ","มาสาย","ออกก่อน","มาสายและออกก่อน","ขาดงาน"] if c in summary.columns]].sum(axis=1)
+            all_work  = summary[[c for c in ["มาปกติ","มาสาย","ออกก่อน","มาสายและออกก่อน","ขาดงาน","ลืมสแกน"] if c in summary.columns]].sum(axis=1)
             summary["% มาปกติ"] = (work_days / all_work.replace(0, 1) * 100).round(1).astype(str) + "%"
 
             st.caption(f"📅 ช่วงที่เลือก: {selected_months[0]} ถึง {selected_months[-1]} ({len(selected_months)} เดือน)")
