@@ -262,6 +262,30 @@ def get_or_create_folder(folder_name: str, parent_id: str) -> Optional[str]:
         return None
 
 @st.cache_data(ttl=300)
+def read_excel_from_drive(filename: str) -> pd.DataFrame:
+    """อ่านไฟล์ Excel จาก Drive พร้อม retry"""
+    for attempt in range(3):
+        try:
+            fid = get_file_id(filename)
+            if not fid:
+                return pd.DataFrame()
+            req = service.files().get_media(fileId=fid, supportsAllDrives=True)
+            fh = io.BytesIO()
+            dl = MediaIoBaseDownload(fh, req)
+            done = False
+            while not done:
+                _, done = dl.next_chunk()
+            fh.seek(0)
+            return pd.read_excel(fh, engine="openpyxl")
+        except Exception as e:
+            logger.warning(f"Read attempt {attempt + 1} failed for {filename}: {e}")
+            if attempt == 2:
+                st.error(f"อ่านไฟล์ {filename} ไม่สำเร็จ")
+                return pd.DataFrame()
+            time.sleep(2 ** attempt)
+    return pd.DataFrame()
+
+@st.cache_data(ttl=300)
 def list_all_files_in_folder(parent_id: str = FOLDER_ID) -> List[dict]:
     """ดึงรายชื่อไฟล์ทั้งหมดใน Drive folder (เฉพาะ .xlsx)"""
     try:
