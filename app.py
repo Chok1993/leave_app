@@ -38,7 +38,7 @@ import time
 import logging
 import datetime as dt
 import requests
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Tuple
 
 import numpy as np
 import pandas as pd
@@ -194,11 +194,12 @@ COLUMN_MAPPING: Dict[str, str] = {
     "fullname": "ชื่อ-สกุล",
 }
 
-FILE_ATTEND = "attendance_report.xlsx"
-FILE_LEAVE  = "leave_report.xlsx"
-FILE_TRAVEL = "travel_report.xlsx"
-FILE_STAFF  = "staff_master.xlsx"          # [S1] NEW
-FILE_NOTIFY = "activity_log.xlsx"          # [N3] NEW
+FILE_ATTEND   = "attendance_report.xlsx"
+FILE_LEAVE    = "leave_report.xlsx"
+FILE_TRAVEL   = "travel_report.xlsx"
+FILE_STAFF    = "staff_master.xlsx"        # [S1] NEW
+FILE_NOTIFY   = "activity_log.xlsx"        # [N3] NEW
+FILE_HOLIDAYS = "special_holidays.xlsx"    # [H1] NEW — วันหยุดพิเศษ
 FOLDER_ID   = "1YFJZvs59ahRHmlRrKcQwepWJz6A-4B7d"
 ATTACHMENT_FOLDER_NAME = "Attachments_Leave_App"
 
@@ -363,16 +364,119 @@ def preprocess_dataframes(df_leave, df_travel, df_att):
         df = clean_names(df, "ชื่อ-สกุล")
     return df_leave, df_travel, df_att
 
-def count_weekdays(start_date, end_date) -> int:
+def count_weekdays(start_date, end_date, extra_holidays: Optional[List[dt.date]] = None) -> int:
+    """นับวันทำการ (จ-ศ) หักวันหยุดพิเศษด้วย (ถ้ามี)"""
     if not start_date or not end_date:
         return 0
     if isinstance(start_date, dt.datetime):
         start_date = start_date.date()
     if isinstance(end_date, dt.datetime):
         end_date = end_date.date()
-    return int(np.busday_count(start_date, end_date + dt.timedelta(days=1)))
+    base = int(np.busday_count(start_date, end_date + dt.timedelta(days=1)))
+    if extra_holidays:
+        overlap = sum(
+            1 for h in extra_holidays
+            if start_date <= h <= end_date and h.weekday() < 5
+        )
+        base = max(0, base - overlap)
+    return base
 
-def parse_time(val) -> Optional[dt.time]:
+# ===========================
+# [H1] Special Holiday Helpers
+# ===========================
+
+FIXED_THAI_HOLIDAYS: List[Tuple[int, int, str]] = [
+    (1,  1,  "วันขึ้นปีใหม่"),
+    (4,  6,  "วันจักรี"),
+    (4,  13, "วันสงกรานต์"),
+    (4,  14, "วันสงกรานต์"),
+    (4,  15, "วันสงกรานต์"),
+    (5,  1,  "วันแรงงานแห่งชาติ"),
+    (5,  5,  "วันฉัตรมงคล"),
+    (6,  3,  "วันเฉลิมพระชนมพรรษา สมเด็จพระราชินี"),
+    (7,  28, "วันเฉลิมพระชนมพรรษา ร.10"),
+    (8,  12, "วันแม่แห่งชาติ"),
+    (10, 13, "วันคล้ายวันสวรรคต ร.9"),
+    (10, 23, "วันปิยมหาราช"),
+    (12, 5,  "วันพ่อแห่งชาติ / วันชาติ"),
+    (12, 10, "วันรัฐธรรมนูญ"),
+    (12, 31, "วันสิ้นปี"),
+]
+
+HOLIDAY_TYPE_OPTIONS = ["วันหยุดราชการ", "วันหยุดพิเศษ (ผนวก)", "วันหยุดประจำหน่วยงาน", "อื่นๆ"]
+HOLIDAY_COLS = ["วันที่", "ชื่อวันหยุด", "ประเภท", "หมายเหตุ"]
+
+def _can_make_date(year: int, month: int, day: int) -> bool:
+    """ตรวจว่า date(year, month, day) valid หรือไม่"""
+    try:
+        dt.date(year, month, day)
+        return True
+    except ValueError:
+        return False
+
+def get_fixed_holidays_for_year(year: int) -> pd.DataFrame:
+    """สร้าง DataFrame วันหยุดราชการตายตัวสำหรับปีที่กำหนด"""
+    rows = []
+    for month, day, name in FIXED_THAI_HOLIDAYS:
+        try:
+            d = dt.date(year, month, day)
+            rows.append({
+                "วันที่":      pd.Timestamp(d),
+                "ชื่อวันหยุด": name,
+                "ประเภท":     "วันหยุดราชการ",
+                "หมายเหตุ":   "กำหนดโดยระบบ (แก้ไขไม่ได้)",
+            })
+        except ValueError:
+            pass
+    return pd.DataFrame(rows)
+
+@st.cache_data(ttl=300)
+def load_holidays_raw() -> pd.DataFrame:
+    """โหลดเฉพาะวันหยุดที่ Admin กำหนดเองจาก Drive"""
+    df = read_excel_from_drive(FILE_HOLIDAYS)
+    if not df.empty:
+        df["วันที่"] = pd.to_datetime(df["วันที่"], errors="coerce")
+        df = df.dropna(subset=["วันที่"])
+        for col in HOLIDAY_COLS:
+            if col not in df.columns:
+                df[col] = ""
+    return df
+
+def load_holidays_all(year: Optional[int] = None) -> pd.DataFrame:
+    """รวมวันหยุดจาก Drive + วันหยุดราชการตายตัว"""
+    df_custom = load_holidays_raw()
+    frames: List[pd.DataFrame] = []
+    if year:
+        frames.append(get_fixed_holidays_for_year(year))
+    if not df_custom.empty:
+        if year:
+            df_y = df_custom[df_custom["วันที่"].dt.year == year]
+        else:
+            df_y = df_custom
+        frames.append(df_y)
+    if not frames:
+        return pd.DataFrame(columns=HOLIDAY_COLS)
+    df_all = pd.concat(frames, ignore_index=True)
+    df_all = df_all.drop_duplicates(subset=["วันที่"]).sort_values("วันที่").reset_index(drop=True)
+    return df_all
+
+def get_holiday_dates(year: Optional[int] = None) -> List[dt.date]:
+    """คืน list ของ dt.date วันหยุดทั้งหมด (ราชการ + พิเศษ)"""
+    df_h = load_holidays_all(year)
+    if df_h.empty:
+        return []
+    return pd.to_datetime(df_h["วันที่"], errors="coerce").dropna().dt.date.tolist()
+
+def get_holiday_name(d: dt.date, holiday_df: pd.DataFrame) -> str:
+    """หาชื่อวันหยุดจาก DataFrame — คืน '' ถ้าไม่ใช่วันหยุด"""
+    if holiday_df.empty:
+        return ""
+    match = holiday_df[pd.to_datetime(holiday_df["วันที่"], errors="coerce").dt.date == d]
+    if not match.empty:
+        return str(match.iloc[0].get("ชื่อวันหยุด", "วันหยุดพิเศษ"))
+    return ""
+
+
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return None
     if isinstance(val, dt.time):
@@ -1079,15 +1183,29 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
     WORK_START = dt.time(8, 30)
     WORK_END   = dt.time(16, 30)
 
+    # ── โหลดวันหยุดพิเศษ (เดือนที่เลือก) ───────────────────
+    sel_years = list({int(ym[:4]) for ym in selected_months})
+    holiday_dates_set: set = set()
+    holiday_df_lookup = pd.DataFrame()
+    for yr in sel_years:
+        holiday_dates_set.update(get_holiday_dates(yr))
+        hdf = load_holidays_all(yr)
+        holiday_df_lookup = pd.concat([holiday_df_lookup, hdf], ignore_index=True)
+
     # ── คำนวณข้อมูลรายวัน ────────────────────────────────────
     records = []
     prog = st.progress(0, text="กำลังประมวลผล...")
     for i, name in enumerate(names_to_process):
         prog.progress((i + 1) / len(names_to_process), text=f"กำลังประมวลผล {name}...")
         for d in all_dates:
-            rec = {"ชื่อพนักงาน": name, "วันที่": d.date(), "เดือน": d.strftime("%Y-%m"),
+            d_date = d.date()
+            rec = {"ชื่อพนักงาน": name, "วันที่": d_date, "เดือน": d.strftime("%Y-%m"),
                    "เวลาเข้า": "", "เวลาออก": "", "สถานะ": ""}
             att = df_months_att[(df_months_att[name_col] == name) & (df_months_att["วันที่"] == d)] if not df_months_att.empty else pd.DataFrame()
+
+            # ตรวจวันหยุดพิเศษก่อน (มีความสำคัญสูงกว่าสถานะอื่น ยกเว้นการลา)
+            is_special_hday = d_date in holiday_dates_set
+            special_hday_name = get_holiday_name(d_date, holiday_df_lookup) if is_special_hday else ""
 
             in_leave, leave_type = False, ""
             ul = df_leave[df_leave["ชื่อ-สกุล"] == name] if not df_leave.empty else pd.DataFrame()
@@ -1106,23 +1224,25 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 rec["สถานะ"] = f"ลา ({leave_type})"
             elif in_travel:
                 rec["สถานะ"] = "ไปราชการ"
+            elif d.weekday() >= 5:
+                rec["สถานะ"] = "วันหยุด"
+            elif is_special_hday:
+                # วันหยุดพิเศษ — แสดงชื่อ
+                rec["สถานะ"] = f"วันหยุด ({special_hday_name})"
             elif not att.empty:
                 row = att.iloc[0]
                 rec["เวลาเข้า"] = row.get("เวลาเข้า", "")
                 rec["เวลาออก"] = row.get("เวลาออก", "")
-                if d.weekday() >= 5:
-                    rec["สถานะ"] = "วันหยุด"
+                t_in  = parse_time(rec["เวลาเข้า"])
+                t_out = parse_time(rec["เวลาออก"])
+                if not t_in and not t_out:
+                    rec["สถานะ"] = "ขาดงาน"
+                elif t_in and t_in > WORK_START:
+                    rec["สถานะ"] = "มาสายและออกก่อน" if (not t_out or t_out < WORK_END) else "มาสาย"
+                elif not t_out or t_out < WORK_END:
+                    rec["สถานะ"] = "ออกก่อน"
                 else:
-                    t_in  = parse_time(rec["เวลาเข้า"])
-                    t_out = parse_time(rec["เวลาออก"])
-                    if not t_in and not t_out:
-                        rec["สถานะ"] = "ขาดงาน"
-                    elif t_in and t_in > WORK_START:
-                        rec["สถานะ"] = "มาสายและออกก่อน" if (not t_out or t_out < WORK_END) else "มาสาย"
-                    elif not t_out or t_out < WORK_END:
-                        rec["สถานะ"] = "ออกก่อน"
-                    else:
-                        rec["สถานะ"] = "มาปกติ"
+                    rec["สถานะ"] = "มาปกติ"
             else:
                 rec["สถานะ"] = "วันหยุด" if d.weekday() >= 5 else "ขาดงาน"
             records.append(rec)
@@ -1772,10 +1892,10 @@ elif menu == "⚙️ ผู้ดูแลระบบ":
             df_att    = read_excel_from_drive(FILE_ATTEND)
             df_staff  = read_excel_from_drive(FILE_STAFF)
 
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab_hol = st.tabs([
             "📂 ไฟล์ลา", "📂 ไฟล์ราชการ",
             "📂 ไฟล์สแกนนิ้ว", "📂 ไฟล์บุคลากร",
-            "🔧 ตั้งค่าระบบ", "👆 คีย์ลืมสแกนนิ้ว",
+            "🔧 ตั้งค่าระบบ", "👆 คีย์ลืมสแกนนิ้ว", "🎌 วันหยุดพิเศษ",
         ])
 
         def admin_file_panel(df, filename, tab_obj):
@@ -2099,6 +2219,226 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
                                     st.rerun()
             else:
                 st.info("ยังไม่มีข้อมูลสแกนในระบบ")
+
+        # ============================================================
+        # 🎌 Tab: วันหยุดพิเศษ
+        # ============================================================
+        with tab_hol:
+            st.subheader("🎌 จัดการวันหยุดพิเศษ / วันหยุดราชการ")
+            st.caption(
+                "วันหยุดที่กำหนดในหน้านี้จะถูกนำไปใช้ใน: "
+                "① ตรวจสอบการปฏิบัติงาน (แสดงสถานะวันหยุด) "
+                "② คำนวณวันลา/ราชการ (หักออกจากวันทำการ) "
+                "③ ปฏิทินกลาง"
+            )
+
+            hol_yr_opts = list(range(dt.date.today().year + 1, dt.date.today().year - 3, -1))
+            hol_col1, hol_col2 = st.columns([1, 3])
+            with hol_col1:
+                hol_view_year = st.selectbox("ดูปี (พ.ศ.)", [y + 543 for y in hol_yr_opts], key="hol_view_year")
+                hol_view_year_ad = hol_view_year - 543
+
+            with hol_col2:
+                hol_show_fixed = st.checkbox("แสดงวันหยุดราชการตายตัว (กำหนดโดยระบบ)", value=True, key="hol_show_fixed")
+
+            # โหลดข้อมูล
+            df_hol_custom = load_holidays_raw()
+            df_hol_fixed  = get_fixed_holidays_for_year(hol_view_year_ad)
+
+            if hol_show_fixed:
+                df_hol_display = load_holidays_all(hol_view_year_ad)
+            else:
+                df_hol_display = df_hol_custom[
+                    pd.to_datetime(df_hol_custom["วันที่"], errors="coerce").dt.year == hol_view_year_ad
+                ] if not df_hol_custom.empty else pd.DataFrame(columns=HOLIDAY_COLS)
+
+            # ─── ตารางแสดงวันหยุด ──────────────────────────────
+            st.markdown(f"#### 📋 วันหยุดทั้งหมดปี พ.ศ. {hol_view_year}")
+
+            # นับจำนวนวันหยุดที่ตกในวันทำการ (จ-ศ)
+            hol_dates_yr = get_holiday_dates(hol_view_year_ad)
+            hol_workdays = [d for d in hol_dates_yr if d.weekday() < 5]
+            hol_weekend  = [d for d in hol_dates_yr if d.weekday() >= 5]
+
+            hkc1, hkc2, hkc3 = st.columns(3)
+            hkc1.metric("📅 วันหยุดทั้งหมด",       f"{len(hol_dates_yr)} วัน")
+            hkc2.metric("📌 ตกในวันทำการ (จ-ศ)",   f"{len(hol_workdays)} วัน", help="วันที่มีผลหักจากวันทำการ")
+            hkc3.metric("🏖️ ตกวันเสาร์-อาทิตย์",   f"{len(hol_weekend)} วัน",  help="ไม่มีผลต่อวันทำการ")
+
+            st.divider()
+
+            if not df_hol_display.empty:
+                # เพิ่มคอลัมน์ช่วยดู
+                df_show_hol = df_hol_display.copy()
+                df_show_hol["วันที่"] = pd.to_datetime(df_show_hol["วันที่"], errors="coerce")
+                df_show_hol["วัน"] = df_show_hol["วันที่"].dt.strftime("%A").map({
+                    "Monday":"จันทร์","Tuesday":"อังคาร","Wednesday":"พุธ",
+                    "Thursday":"พฤหัสบดี","Friday":"ศุกร์","Saturday":"เสาร์","Sunday":"อาทิตย์",
+                })
+                df_show_hol["กระทบวันทำการ"] = df_show_hol["วันที่"].dt.weekday.apply(
+                    lambda w: "✅ ใช่" if w < 5 else "—"
+                )
+                df_show_hol["วันที่"] = df_show_hol["วันที่"].dt.strftime("%d/%m/%Y")
+
+                def hol_row_color(row):
+                    if str(row.get("หมายเหตุ","")).startswith("กำหนดโดยระบบ"):
+                        return ["background-color:#f0f4ff"] * len(row)
+                    return ["background-color:#fffde7"] * len(row)
+
+                st.dataframe(
+                    df_show_hol[["วันที่","วัน","ชื่อวันหยุด","ประเภท","กระทบวันทำการ","หมายเหตุ"]]
+                    .style.apply(hol_row_color, axis=1),
+                    use_container_width=True,
+                    height=320,
+                )
+                st.caption("🔵 น้ำเงินอ่อน = วันหยุดราชการตายตัว  |  🟡 เหลืองอ่อน = วันหยุดที่ Admin เพิ่มเอง")
+            else:
+                st.info(f"ยังไม่มีวันหยุดพิเศษสำหรับปี {hol_view_year}")
+
+            st.divider()
+
+            # ─── ฟอร์มเพิ่มวันหยุด ─────────────────────────────
+            st.markdown("#### ➕ เพิ่มวันหยุดพิเศษ")
+            st.info("วันหยุดราชการตายตัวจะถูกเพิ่มให้อัตโนมัติ ไม่ต้องกรอกซ้ำ")
+
+            with st.form("form_add_holiday"):
+                ha_col1, ha_col2 = st.columns(2)
+                with ha_col1:
+                    ha_date   = st.date_input("วันที่ *", value=dt.date.today(), key="ha_date")
+                    ha_name   = st.text_input("ชื่อวันหยุด *", placeholder="เช่น วันพ่อแห่งชาติ, วันหยุดชดเชย", key="ha_name")
+                with ha_col2:
+                    ha_type   = st.selectbox("ประเภท *", HOLIDAY_TYPE_OPTIONS, key="ha_type")
+                    ha_note   = st.text_input("หมายเหตุ", placeholder="ข้อมูลเพิ่มเติม (ถ้ามี)", key="ha_note")
+
+                ha_submit = st.form_submit_button("➕ เพิ่มวันหยุด", use_container_width=True, type="primary")
+
+                if ha_submit:
+                    ha_errors: List[str] = []
+                    if not ha_name.strip():
+                        ha_errors.append("❌ กรุณาระบุชื่อวันหยุด")
+
+                    # ตรวจซ้ำกับวันหยุดที่ Admin เพิ่มเองแล้ว
+                    if not df_hol_custom.empty:
+                        existing_dates = pd.to_datetime(df_hol_custom["วันที่"], errors="coerce").dt.date.tolist()
+                        if ha_date in existing_dates:
+                            ha_errors.append(f"❌ วันที่ {ha_date.strftime('%d/%m/%Y')} มีในระบบแล้ว")
+
+                    # ตรวจซ้ำกับวันหยุดราชการตายตัว
+                    fixed_dates = [dt.date(ha_date.year, m, d) for m, d, _ in FIXED_THAI_HOLIDAYS
+                                   if _can_make_date(ha_date.year, m, d)]
+                    if ha_date in fixed_dates:
+                        ha_errors.append(
+                            f"⚠️ วันที่ {ha_date.strftime('%d/%m/%Y')} ตรงกับวันหยุดราชการตายตัวที่ระบบกำหนดไว้แล้ว "
+                            f"— ไม่จำเป็นต้องเพิ่มซ้ำ"
+                        )
+
+                    if ha_errors:
+                        for e in ha_errors:
+                            st.error(e)
+                    else:
+                        new_hol = {
+                            "วันที่":      pd.Timestamp(ha_date),
+                            "ชื่อวันหยุด": ha_name.strip(),
+                            "ประเภท":     ha_type,
+                            "หมายเหตุ":   ha_note.strip(),
+                        }
+                        df_hol_new = pd.concat(
+                            [df_hol_custom, pd.DataFrame([new_hol])], ignore_index=True
+                        ).sort_values("วันที่").reset_index(drop=True)
+
+                        if write_excel_to_drive(FILE_HOLIDAYS, df_hol_new):
+                            log_activity(
+                                "เพิ่มวันหยุดพิเศษ",
+                                f"{ha_name} ({ha_date.strftime('%d/%m/%Y')}) ประเภท {ha_type}",
+                                "Admin",
+                            )
+                            st.toast(f"✅ เพิ่ม '{ha_name}' วันที่ {ha_date.strftime('%d/%m/%Y')} สำเร็จ", icon="🎌")
+                            st.cache_data.clear()
+                            time.sleep(0.5)
+                            st.rerun()
+
+            st.divider()
+
+            # ─── ลบวันหยุด (เฉพาะที่ Admin เพิ่มเอง) ──────────
+            st.markdown("#### 🗑️ ลบวันหยุดพิเศษ")
+            st.warning("⚠️ ลบได้เฉพาะวันหยุดที่ **Admin เพิ่มเอง** เท่านั้น — วันหยุดราชการตายตัวลบไม่ได้")
+
+            # โหลดใหม่ (อาจเพิ่งเพิ่มไป)
+            df_hol_custom_fresh = load_holidays_raw()
+            if df_hol_custom_fresh.empty:
+                st.info("ยังไม่มีวันหยุดพิเศษที่ Admin เพิ่มเอง")
+            else:
+                df_hol_del = df_hol_custom_fresh.copy()
+                df_hol_del["วันที่"] = pd.to_datetime(df_hol_del["วันที่"], errors="coerce")
+                df_hol_del["label"] = df_hol_del.apply(
+                    lambda r: f"{r['วันที่'].strftime('%d/%m/%Y') if pd.notna(r['วันที่']) else '?'} — {r.get('ชื่อวันหยุด','')} ({r.get('ประเภท','')})",
+                    axis=1,
+                )
+
+                del_hol_col1, del_hol_col2 = st.columns([3, 1])
+                with del_hol_col1:
+                    del_hol_label = st.selectbox(
+                        "เลือกวันหยุดที่ต้องการลบ",
+                        df_hol_del["label"].tolist(),
+                        key="del_hol_select",
+                    )
+                with del_hol_col2:
+                    st.write("")
+                    st.write("")
+                    if st.button("🗑️ ลบวันหยุดนี้", key="btn_del_hol", type="primary"):
+                        idx_del = df_hol_del[df_hol_del["label"] == del_hol_label].index.tolist()
+                        if idx_del:
+                            df_hol_after = df_hol_custom_fresh.drop(index=idx_del).reset_index(drop=True)
+                            if write_excel_to_drive(FILE_HOLIDAYS, df_hol_after):
+                                log_activity("ลบวันหยุดพิเศษ", del_hol_label, "Admin")
+                                st.toast("✅ ลบวันหยุดสำเร็จ", icon="🗑️")
+                                st.cache_data.clear()
+                                time.sleep(0.5)
+                                st.rerun()
+
+            st.divider()
+
+            # ─── Export ─────────────────────────────────────────
+            st.markdown("#### 📥 Export ปฏิทินวันหยุด")
+            exp_hol_col1, exp_hol_col2 = st.columns(2)
+            with exp_hol_col1:
+                exp_hol_yr_be = st.selectbox(
+                    "เลือกปี (พ.ศ.) ที่ต้องการ Export",
+                    [y + 543 for y in hol_yr_opts],
+                    key="exp_hol_year",
+                )
+                exp_hol_yr_ad = exp_hol_yr_be - 543
+            with exp_hol_col2:
+                st.write("")
+                st.write("")
+                if st.button("📥 Export Excel", key="btn_exp_hol", use_container_width=True):
+                    df_exp = load_holidays_all(exp_hol_yr_ad)
+                    if df_exp.empty:
+                        st.warning("ไม่มีข้อมูล")
+                    else:
+                        df_exp_out = df_exp.copy()
+                        df_exp_out["วันที่"] = pd.to_datetime(df_exp_out["วันที่"], errors="coerce")
+                        df_exp_out["วัน"] = df_exp_out["วันที่"].dt.strftime("%A").map({
+                            "Monday":"จันทร์","Tuesday":"อังคาร","Wednesday":"พุธ",
+                            "Thursday":"พฤหัสบดี","Friday":"ศุกร์","Saturday":"เสาร์","Sunday":"อาทิตย์",
+                        })
+                        df_exp_out["กระทบวันทำการ"] = df_exp_out["วันที่"].dt.weekday.apply(
+                            lambda w: "ใช่" if w < 5 else "ไม่"
+                        )
+                        df_exp_out["วันที่"] = df_exp_out["วันที่"].dt.strftime("%d/%m/%Y")
+                        buf_hol = io.BytesIO()
+                        with pd.ExcelWriter(buf_hol, engine="xlsxwriter") as w:
+                            df_exp_out[["วันที่","วัน","ชื่อวันหยุด","ประเภท","กระทบวันทำการ","หมายเหตุ"]].to_excel(
+                                w, index=False, sheet_name=f"วันหยุด_{exp_hol_yr_be}"
+                            )
+                        buf_hol.seek(0)
+                        st.download_button(
+                            f"⬇️ ดาวน์โหลดปฏิทินวันหยุด {exp_hol_yr_be}",
+                            buf_hol,
+                            f"Holidays_{exp_hol_yr_be}.xlsx",
+                            mime=EXCEL_MIME,
+                            use_container_width=True,
+                        )
 
     elif password:
         st.error("❌ รหัสผ่านไม่ถูกต้อง")
