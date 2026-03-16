@@ -778,19 +778,142 @@ def get_all_names_fallback(df_leave, df_travel, df_att) -> List[str]:
 # ===========================
 MANUAL_SCAN_COLS = ["ชื่อ-สกุล", "วันที่", "เวลาเข้า", "เวลาออก", "หมายเหตุ"]
 
+def _parse_manual_scan_detail(detail: str, person: str) -> Optional[dict]:
+    """
+    แปลงบรรทัด รายละเอียด ของ activity_log ประเภท "คีย์สแกนนิ้ว"
+    รูปแบบ: "Admin คีย์ YYYY-MM-DD เข้า HH:MM ออก HH:MM"
+    คืน dict หรือ None ถ้าแปลงไม่ได้
+    """
+    import re as _re
+    # ลอง match pattern หลัก
+    m = _re.search(
+        r"(\d{4}-\d{2}-\d{2})\s+เข้า\s+(\d{1,2}:\d{2})\s+ออก\s+(\d{1,2}:\d{2})",
+        str(detail),
+    )
+    if not m:
+        # ลอง pattern วันที่แบบ DD/MM/YYYY
+        m2 = _re.search(
+            r"(\d{1,2}/\d{1,2}/\d{4})\s+เข้า\s+(\d{1,2}:\d{2})\s+ออก\s+(\d{1,2}:\d{2})",
+            str(detail),
+        )
+        if not m2:
+            return None
+        date_str, t_in, t_out = m2.group(1), m2.group(2), m2.group(3)
+        try:
+            d = pd.to_datetime(date_str, dayfirst=True).normalize()
+        except Exception:
+            return None
+    else:
+        date_str, t_in, t_out = m.group(1), m.group(2), m.group(3)
+        try:
+            d = pd.to_datetime(date_str).normalize()
+        except Exception:
+            return None
+
+    return {
+        "ชื่อ-สกุล": person.strip(),
+        "วันที่":     d,
+        "เวลาเข้า":   t_in,
+        "เวลาออก":    t_out,
+        "หมายเหตุ":   f"Activity Log — {detail[:60]}",
+    }
+
+def _parse_delete_scan_detail(detail: str, person: str) -> Optional[tuple]:
+    """
+    แปลงบรรทัด รายละเอียด ของ activity_log ประเภท "ลบสแกนนิ้ว"
+    รูปแบบ: "Admin ลบรายการ DD/MM/YYYY — เข้า HH:MM ออก HH:MM"
+    คืน (person, date) หรือ None
+    """
+    import re as _re
+    m = _re.search(r"(\d{1,2}/\d{1,2}/\d{4})", str(detail))
+    if not m:
+        m2 = _re.search(r"(\d{4}-\d{2}-\d{2})", str(detail))
+        if not m2:
+            return None
+        date_str = m2.group(1)
+        try:
+            d = pd.to_datetime(date_str).normalize()
+        except Exception:
+            return None
+    else:
+        date_str = m.group(1)
+        try:
+            d = pd.to_datetime(date_str, dayfirst=True).normalize()
+        except Exception:
+            return None
+    return (person.strip(), d)
+
 @st.cache_data(ttl=300)
 def load_manual_scans() -> pd.DataFrame:
-    """โหลดข้อมูลลืมสแกนนิ้วจากไฟล์แยก (manual_scan.xlsx)"""
-    df = read_excel_from_drive(FILE_MANUAL_SCAN)
-    if df.empty:
+    """
+    โหลดข้อมูลลืมสแกนนิ้วจาก 2 แหล่ง แล้วรวมกัน:
+      1. manual_scan.xlsx  — บันทึกตรงจากฟอร์มในแอป
+      2. activity_log.xlsx — ประเภท 'คีย์สแกนนิ้ว' (หักรายการ 'ลบสแกนนิ้ว' ออก)
+    """
+    frames: List[pd.DataFrame] = []
+
+    # ── 1. manual_scan.xlsx ───────────────────────────────────
+    df_ms = read_excel_from_drive(FILE_MANUAL_SCAN)
+    if not df_ms.empty:
+        df_ms["วันที่"]    = pd.to_datetime(df_ms["วันที่"],    errors="coerce").dt.normalize()
+        df_ms["ชื่อ-สกุล"] = df_ms["ชื่อ-สกุล"].astype(str).str.strip()
+        for col in MANUAL_SCAN_COLS:
+            if col not in df_ms.columns:
+                df_ms[col] = ""
+        frames.append(df_ms[MANUAL_SCAN_COLS])
+
+    # ── 2. activity_log.xlsx ──────────────────────────────────
+    df_log = read_excel_from_drive(FILE_NOTIFY)
+    if not df_log.empty and "ประเภท" in df_log.columns:
+
+        # รวบรวมรายการที่ถูกลบไว้ก่อน (key = "ชื่อ|วันที่")
+        deleted_keys: set = set()
+        df_del = df_log[df_log["ประเภท"].astype(str).str.strip() == "ลบสแกนนิ้ว"]
+        for _, row in df_del.iterrows():
+            result = _parse_delete_scan_detail(
+                str(row.get("รายละเอียด", "")),
+                str(row.get("ผู้เกี่ยวข้อง", "")),
+            )
+            if result:
+                person, d = result
+                deleted_keys.add(f"{person}|{d}")
+
+        # parse รายการ คีย์สแกนนิ้ว
+        df_key = df_log[df_log["ประเภท"].astype(str).str.strip() == "คีย์สแกนนิ้ว"]
+        log_rows: List[dict] = []
+        for _, row in df_key.iterrows():
+            rec = _parse_manual_scan_detail(
+                str(row.get("รายละเอียด", "")),
+                str(row.get("ผู้เกี่ยวข้อง", "")),
+            )
+            if rec is None:
+                continue
+            key = f"{rec['ชื่อ-สกุล']}|{rec['วันที่']}"
+            # ข้ามถ้าถูกลบแล้ว
+            if key in deleted_keys:
+                continue
+            log_rows.append(rec)
+
+        if log_rows:
+            df_from_log = pd.DataFrame(log_rows)
+            for col in MANUAL_SCAN_COLS:
+                if col not in df_from_log.columns:
+                    df_from_log[col] = ""
+            frames.append(df_from_log[MANUAL_SCAN_COLS])
+
+    if not frames:
         return pd.DataFrame(columns=MANUAL_SCAN_COLS)
-    # normalize
-    df["วันที่"] = pd.to_datetime(df["วันที่"], errors="coerce").dt.normalize()
-    df["ชื่อ-สกุล"] = df["ชื่อ-สกุล"].astype(str).str.strip()
-    for col in MANUAL_SCAN_COLS:
-        if col not in df.columns:
-            df[col] = ""
-    return df
+
+    df_all = pd.concat(frames, ignore_index=True)
+    df_all["วันที่"]    = pd.to_datetime(df_all["วันที่"], errors="coerce").dt.normalize()
+    df_all["ชื่อ-สกุล"] = df_all["ชื่อ-สกุล"].astype(str).str.strip()
+    df_all = df_all.dropna(subset=["วันที่"])
+    df_all = df_all[df_all["ชื่อ-สกุล"].str.lower() != "nan"]
+
+    # dedup: ถ้าคน+วันที่ซ้ำ เก็บอัน manual_scan.xlsx ก่อน (index ต่ำกว่า)
+    df_all = df_all.drop_duplicates(subset=["ชื่อ-สกุล", "วันที่"], keep="first")
+    df_all = df_all.sort_values(["ชื่อ-สกุล", "วันที่"]).reset_index(drop=True)
+    return df_all
 
 def merge_attendance_with_manual(df_att: pd.DataFrame, df_manual: pd.DataFrame) -> pd.DataFrame:
     """
