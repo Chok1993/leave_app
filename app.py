@@ -200,9 +200,10 @@ FILE_TRAVEL    = "travel_report.xlsx"
 FILE_STAFF     = "staff_master.xlsx"
 FILE_NOTIFY    = "activity_log.xlsx"
 FILE_HOLIDAYS  = "special_holidays.xlsx"
-FILE_MANUAL_SCAN = "manual_scan.xlsx"   # [MS] แยกไฟล์บันทึกลืมสแกน — ไม่แตะ attendance_report
+FILE_MANUAL_SCAN = "manual_scan.xlsx"
 FOLDER_ID   = "1YFJZvs59ahRHmlRrKcQwepWJz6A-4B7d"
 ATTACHMENT_FOLDER_NAME = "Attachments_Leave_App"
+BACKUP_FOLDER_NAME     = "Backup"   # 📁 Backup/ — โฟลเดอร์หลักสำหรับ backup
 
 # ===========================
 # Google Drive Service
@@ -230,15 +231,26 @@ service = init_drive_service()
 # Drive Helpers
 # ===========================
 def get_file_id(filename: str, parent_id: str = FOLDER_ID) -> Optional[str]:
+    """ค้นหา File ID ใน parent_id ที่กำหนด — ถ้ามี duplicate เก็บล่าสุด ลบที่เหลือ"""
     try:
         res = service.files().list(
             q=f"name='{filename}' and '{parent_id}' in parents and trashed=false",
-            fields="files(id)",
+            fields="files(id, modifiedTime)",
+            orderBy="modifiedTime desc",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
         ).execute()
         files = res.get("files", [])
-        return files[0]["id"] if files else None
+        if not files:
+            return None
+        keep_id = files[0]["id"]
+        for dup in files[1:]:
+            try:
+                service.files().delete(fileId=dup["id"], supportsAllDrives=True).execute()
+                logger.info(f"Deleted duplicate '{filename}' id={dup['id']}")
+            except Exception:
+                pass
+        return keep_id
     except Exception as e:
         logger.error(f"get_file_id({filename}): {e}")
         return None
@@ -494,17 +506,50 @@ def write_excel_to_drive(filename: str, df: pd.DataFrame) -> bool:
         return False
 
 def backup_excel(filename: str, df: pd.DataFrame) -> None:
+    """
+    สำรองไฟล์ก่อนแก้ไข โครงสร้าง:
+      📁 Backup/
+        └── 📁 BAK_{filename}/
+              └── BAK_{filename}.xlsx  ← overwrite ทุกครั้ง (1 ไฟล์คงที่)
+    """
     if df.empty:
         return
     try:
         fid = get_file_id(filename)
-        if fid:
-            ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-            service.files().copy(
-                fileId=fid,
-                body={"name": f"BAK_{ts}_{filename}", "parents": [FOLDER_ID]},
-                supportsAllDrives=True,
-            ).execute()
+        if not fid:
+            return
+
+        bak_name     = f"BAK_{filename}"
+
+        # 1. หรือสร้าง Backup/ folder
+        backup_root  = get_or_create_folder(BACKUP_FOLDER_NAME, FOLDER_ID)
+        if not backup_root:
+            logger.warning("backup_excel: ไม่สามารถสร้าง Backup/ folder ได้")
+            return
+
+        # 2. หรือสร้าง Backup/BAK_{filename}/ subfolder
+        bak_subfolder = get_or_create_folder(bak_name, backup_root)
+        if not bak_subfolder:
+            logger.warning(f"backup_excel: ไม่สามารถสร้าง {bak_name}/ subfolder ได้")
+            return
+
+        # 3. ลบ BAK เดิมใน subfolder (ถ้ามี) แล้ว copy ใหม่ทับ
+        existing_bak_id = get_file_id(bak_name, bak_subfolder)
+        if existing_bak_id:
+            try:
+                service.files().delete(
+                    fileId=existing_bak_id, supportsAllDrives=True
+                ).execute()
+            except Exception:
+                pass
+
+        service.files().copy(
+            fileId=fid,
+            body={"name": bak_name, "parents": [bak_subfolder]},
+            supportsAllDrives=True,
+        ).execute()
+        logger.info(f"Backup saved: {BACKUP_FOLDER_NAME}/{bak_name}/{bak_name}")
+
     except Exception as e:
         logger.warning(f"backup_excel({filename}): {e}")
 
@@ -2380,6 +2425,112 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
             )
             st.dataframe(df_quota_cfg, use_container_width=True)
             st.caption("หากต้องการเปลี่ยนโควต้า ให้แก้ไขค่า LEAVE_QUOTA ในไฟล์ app.py")
+
+            st.divider()
+
+            # ─── 🧹 ล้างไฟล์ Drive ────────────────────────────────
+            st.subheader("🧹 ล้างไฟล์ซ้ำใน Drive")
+            st.info(
+                "สแกนเฉพาะ **root folder** (`Leave_App_Data/`) — "
+                "ลบไฟล์ข้อมูลที่ชื่อซ้ำกัน เก็บไว้เฉพาะไฟล์ล่าสุด 1 ไฟล์ต่อชื่อ  \n"
+                "📁 โฟลเดอร์ `Backup/` จะ **ไม่ถูกแตะเลย**"
+            )
+
+            with st.spinner("กำลังสแกนไฟล์ใน Drive..."):
+                all_drive_files = list_all_files_in_folder()   # scan root only
+
+            # แบ่งประเภทไฟล์ใน root
+            import re
+            dup_map:  dict = {}   # filename → [(id, modifiedTime), ...]
+            misc_bak: list = []   # BAK_* ที่ยังหลุดอยู่ใน root (ไม่ควรมีแล้ว)
+
+            for f in all_drive_files:
+                fname = f["name"]
+                if re.match(r"^BAK_", fname):
+                    misc_bak.append(f)   # BAK ใน root = หลงเหลือจากระบบเก่า
+                else:
+                    dup_map.setdefault(fname, []).append(f)
+
+            # หา duplicate (ชื่อเดียวกัน > 1 ไฟล์)
+            dup_to_delete = []
+            for fname, flist in dup_map.items():
+                if len(flist) > 1:
+                    # flist เรียง modifiedTime desc แล้ว — เก็บอันแรก
+                    for dup_f in flist[1:]:
+                        dup_to_delete.append({"name": fname, "id": dup_f["id"],
+                                              "วันที่แก้ไข": dup_f.get("modifiedTime","")[:10]})
+
+            total_to_delete = len(misc_bak) + len(dup_to_delete)
+
+            # แสดงโครงสร้าง Backup folder
+            backup_root_id = get_or_create_folder(BACKUP_FOLDER_NAME, FOLDER_ID)
+            st.markdown("**📁 โครงสร้าง Backup folder ปัจจุบัน:**")
+            bk_col1, bk_col2, bk_col3 = st.columns(3)
+            data_files = [FILE_ATTEND, FILE_LEAVE, FILE_TRAVEL]
+            for i, dfile in enumerate(data_files):
+                bak_sub_id  = get_or_create_folder(f"BAK_{dfile}", backup_root_id) if backup_root_id else None
+                bak_file_id = get_file_id(f"BAK_{dfile}", bak_sub_id) if bak_sub_id else None
+                col = [bk_col1, bk_col2, bk_col3][i]
+                col.markdown(
+                    f"{'🟢' if bak_file_id else '🔴'} `BAK_{dfile}`  \n"
+                    f"{'✅ มี backup' if bak_file_id else '⚠️ ยังไม่มี'}"
+                )
+
+            st.divider()
+
+            # Preview + ปุ่มลบ
+            cl1, cl2 = st.columns(2)
+            cl1.metric("♻️ ไฟล์ซ้ำใน root (duplicate)", f"{len(dup_to_delete)} ไฟล์")
+            cl2.metric("⚠️ BAK หลุดอยู่ใน root",        f"{len(misc_bak)} ไฟล์")
+
+            if total_to_delete == 0:
+                st.success("✅ Drive root สะอาดแล้ว ไม่มีไฟล์ที่ต้องล้าง")
+            else:
+                with st.expander(f"📋 ดูรายการที่จะถูกลบ ({total_to_delete} ไฟล์)", expanded=True):
+                    preview_rows = (
+                        [{"ชื่อไฟล์": d["name"], "วันที่แก้ไข": d.get("วันที่แก้ไข",""), "ประเภท": "ไฟล์ซ้ำ (ลบ duplicate เก่า)"} for d in dup_to_delete]
+                        + [{"ชื่อไฟล์": f["name"], "วันที่แก้ไข": f.get("modifiedTime","")[:10], "ประเภท": "BAK หลุดใน root"} for f in misc_bak]
+                    )
+                    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
+
+                st.warning(f"⚠️ จะลบ {total_to_delete} ไฟล์ออกจาก root อย่างถาวร (ไฟล์ใน Backup/ จะไม่ถูกแตะ)")
+
+                if st.button(
+                    f"🧹 ล้างไฟล์ซ้ำ ({total_to_delete} ไฟล์)",
+                    key="btn_drive_cleanup",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    success_count, fail_count = 0, 0
+                    all_to_delete = (
+                        [(d["id"], d["name"]) for d in dup_to_delete]
+                        + [(f["id"], f["name"]) for f in misc_bak]
+                    )
+                    cleanup_prog = st.progress(0, text="กำลังลบไฟล์...")
+                    for idx, (fid_del, fname_del) in enumerate(all_to_delete):
+                        cleanup_prog.progress(
+                            (idx + 1) / len(all_to_delete),
+                            text=f"กำลังลบ {fname_del}...",
+                        )
+                        try:
+                            service.files().delete(fileId=fid_del, supportsAllDrives=True).execute()
+                            success_count += 1
+                            logger.info(f"Cleanup deleted: {fname_del}")
+                        except Exception as del_err:
+                            fail_count += 1
+                            logger.warning(f"Cleanup failed: {fname_del} — {del_err}")
+
+                    cleanup_prog.empty()
+                    st.cache_data.clear()
+                    log_activity("ล้างไฟล์ Drive", f"ลบ {success_count} ไฟล์ซ้ำใน root", "Admin")
+
+                    if fail_count == 0:
+                        st.toast(f"✅ ล้างสำเร็จ {success_count} ไฟล์", icon="🧹")
+                        st.success(f"✅ เสร็จสิ้น — ลบไป {success_count} ไฟล์")
+                    else:
+                        st.warning(f"ลบสำเร็จ {success_count} | ล้มเหลว {fail_count} (ดู log)")
+                    time.sleep(1)
+                    st.rerun()
 
         # ============================================================
         # 👆 Tab 6 — คีย์ลืมสแกนนิ้ว  (บันทึกลง manual_scan.xlsx แยกต่างหาก)
