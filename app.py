@@ -1578,16 +1578,36 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
         df_tr["วันที่สิ้นสุด"] = pd.to_datetime(df_tr.get("วันที่สิ้นสุด"), errors="coerce").dt.normalize()
         df_tr["ชื่อ-สกุล"]    = df_tr["ชื่อ-สกุล"].astype(str).str.strip()
         df_tr = df_tr.dropna(subset=["วันที่เริ่ม", "วันที่สิ้นสุด"])
+
         for _, row in df_tr.iterrows():
-            name_t = row["ชื่อ-สกุล"]
-            if not name_t or name_t.lower() == "nan":
-                continue
             s    = row["วันที่เริ่ม"].date()
             e    = row["วันที่สิ้นสุด"].date()
             proj = str(row.get("เรื่อง/กิจกรรม", "ไปราชการ")).strip() or "ไปราชการ"
-            # เพิ่ม source file ไว้ด้วยเพื่อ debug ถ้าจำเป็น
             src  = str(row.get("_source_file", FILE_TRAVEL))
-            travel_index.setdefault(name_t, []).append((s, e, proj, src))
+
+            # ── รวมชื่อคนหลัก + ผู้ร่วมเดินทางทั้งหมด ──────────────
+            names_in_trip: List[str] = []
+
+            # 1. คนหลัก
+            main_name = row["ชื่อ-สกุล"]
+            if main_name and main_name.lower() != "nan":
+                names_in_trip.append(main_name)
+
+            # 2. ผู้ร่วมเดินทาง — คั่นด้วย "," หรือขึ้นบรรทัดใหม่
+            companions_raw = str(row.get("ผู้ร่วมเดินทาง", "")).strip()
+            if companions_raw and companions_raw not in ("-", "nan", ""):
+                # ทำความสะอาด: ตัดเลข "1.", "2.", "3." ที่อาจแอบมา
+                import re as _re
+                companions_raw = _re.sub(r"\d+\.\s*", "", companions_raw)
+                for comp in companions_raw.replace("\n", ",").split(","):
+                    comp = comp.strip()
+                    # กรองเอาเฉพาะชื่อที่ดูเหมือนชื่อบุคคล (มีตัวอักษรไทย ≥ 3 ตัว)
+                    if comp and len(comp) >= 3 and comp.lower() != "nan":
+                        names_in_trip.append(comp)
+
+            # 3. บันทึกลง index ทุกคนในทริปนี้
+            for person in set(names_in_trip):  # set() ป้องกันซ้ำ
+                travel_index.setdefault(person, []).append((s, e, proj, src))
 
     # ── Pre-index leave รายคน ─────────────────────────────────
     leave_index: Dict[str, List[tuple]] = {}
