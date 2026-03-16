@@ -344,24 +344,42 @@ def normalize_date_col(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df
 
 def clean_names(df: pd.DataFrame, col: str) -> pd.DataFrame:
-    if not df.empty and col in df.columns:
-        df[col] = df[col].astype(str).str.strip()
+    """
+    Strip whitespace จาก column ชื่อ
+    FIX: ป้องกัน duplicate columns (df[col] คืน DataFrame แทน Series → AttributeError)
+    """
+    if df.empty or col not in df.columns:
+        return df
+    # ถ้ามี column ชื่อซ้ำ (เช่น อ่านจาก Excel ที่มีหัว column ซ้ำ) ให้ drop duplicate ก่อน
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+    # ตอนนี้ df[col] ต้องเป็น Series แน่นอน
+    series = df[col]
+    if isinstance(series, pd.DataFrame):
+        # กรณี edge case ที่ยังเป็น DataFrame อยู่ให้เอา column แรก
+        series = series.iloc[:, 0]
+    df[col] = series.astype(str).str.strip()
     return df
 
 def preprocess_dataframes(df_leave, df_travel, df_att):
-    # Rename columns
-    for df in [df_att]:
-        for old, new in COLUMN_MAPPING.items():
-            if old in df.columns:
-                df.rename(columns={old: new}, inplace=True)
-    # Dates
+    """
+    FIX: for loop เดิมทำ `df = clean_names(df, ...)` แต่ไม่ได้ assign กลับ
+    ทำให้ df_leave / df_travel / df_att ที่ return ออกไปยังไม่ถูก clean
+    แก้โดย assign ตรงๆ ทีละตัวแทน
+    """
+    # Rename columns (df_att อาจมีชื่อคอลัมน์ต่างกัน)
+    for old, new in COLUMN_MAPPING.items():
+        if not df_att.empty and old in df_att.columns:
+            df_att = df_att.rename(columns={old: new})
+    # Normalize dates
     for col in ["วันที่เริ่ม", "วันที่สิ้นสุด"]:
         df_leave  = normalize_date_col(df_leave,  col)
         df_travel = normalize_date_col(df_travel, col)
     df_att = normalize_date_col(df_att, "วันที่")
-    # Names
-    for df in [df_leave, df_travel, df_att]:
-        df = clean_names(df, "ชื่อ-สกุล")
+    # Clean names — assign ผลกลับทีละตัว (ไม่ใช้ for loop)
+    df_leave  = clean_names(df_leave,  "ชื่อ-สกุล")
+    df_travel = clean_names(df_travel, "ชื่อ-สกุล")
+    df_att    = clean_names(df_att,    "ชื่อ-สกุล")
     return df_leave, df_travel, df_att
 
 def count_weekdays(start_date, end_date, extra_holidays: Optional[List[dt.date]] = None) -> int:
