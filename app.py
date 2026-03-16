@@ -381,6 +381,19 @@ def count_weekdays(start_date, end_date, extra_holidays: Optional[List[dt.date]]
         base = max(0, base - overlap)
     return base
 
+def parse_time(val) -> Optional[dt.time]:
+    """แปลง value หลายรูปแบบเป็น time object — คืน None ถ้าแปลงไม่ได้"""
+    if val is None or val == "":
+        return None
+    if isinstance(val, float) and np.isnan(val):
+        return None
+    if isinstance(val, dt.time):
+        return val
+    try:
+        return pd.to_datetime(str(val)).time()
+    except Exception:
+        return None
+
 # ===========================
 # [H1] Special Holiday Helpers
 # ===========================
