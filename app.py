@@ -1186,12 +1186,37 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
         all_names = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, df_att)
 
     if df_att.empty:
-        months = [dt.datetime.now().strftime("%Y-%m")]
+        months_att = set()
     else:
-        # assign เดือน หลัง merge แล้ว (ถ้า assign ก่อน manual จะไม่มีคอลัมน์นี้)
         df_att["วันที่"] = pd.to_datetime(df_att["วันที่"], errors="coerce").dt.normalize()
         df_att["เดือน"] = df_att["วันที่"].dt.strftime("%Y-%m")
-        months = sorted(df_att["เดือน"].dropna().unique().tolist()) or [dt.datetime.now().strftime("%Y-%m")]
+        months_att = set(df_att["เดือน"].dropna().unique().tolist())
+
+    # รวมเดือนจาก travel และ leave ด้วย เพื่อไม่ให้หายเมื่อไม่มีสแกนนิ้ว
+    months_travel: set = set()
+    if not df_travel.empty:
+        for col in ["วันที่เริ่ม", "วันที่สิ้นสุด"]:
+            if col in df_travel.columns:
+                # ขยาย range วันที่เริ่ม–สิ้นสุดออกเป็นรายเดือน
+                for _, row in df_travel.iterrows():
+                    try:
+                        s = pd.to_datetime(row[col]).to_period("M")
+                        months_travel.add(str(s))
+                    except Exception:
+                        pass
+
+    months_leave: set = set()
+    if not df_leave.empty and "วันที่เริ่ม" in df_leave.columns:
+        months_leave = set(
+            df_leave["วันที่เริ่ม"].dropna()
+            .pipe(lambda s: pd.to_datetime(s, errors="coerce"))
+            .dt.strftime("%Y-%m")
+            .dropna()
+            .unique()
+            .tolist()
+        )
+
+    months = sorted(months_att | months_travel | months_leave) or [dt.datetime.now().strftime("%Y-%m")]
 
     name_col = next((c for c in ["ชื่อ-สกุล","ชื่อพนักงาน","ชื่อ"] if not df_att.empty and c in df_att.columns), "ชื่อ-สกุล")
 
@@ -1285,7 +1310,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
     WORK_START = dt.time(8, 30)
     WORK_END   = dt.time(16, 30)
 
-    # ── โหลดวันหยุดพิเศษ (เดือนที่เลือก) ───────────────────
+    # ── โหลดวันหยุดพิเศษ ─────────────────────────────────────
     sel_years = list({int(ym[:4]) for ym in selected_months})
     holiday_dates_set: set = set()
     holiday_df_lookup = pd.DataFrame()
@@ -1294,38 +1319,83 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
         hdf = load_holidays_all(yr)
         holiday_df_lookup = pd.concat([holiday_df_lookup, hdf], ignore_index=True)
 
+    # ── Pre-index travel & leave รายคน (ทำครั้งเดียวก่อน loop หลัก) ─
+    # เพื่อหลีกเลี่ยงการ filter DataFrame ซ้ำทุกวันทุกคน
+    # แปลง date columns ให้เป็น dt.date ก่อนเก็บ
+    travel_index: Dict[str, List[tuple]] = {}   # name → [(start_date, end_date, project)]
+    if not df_travel.empty and "ชื่อ-สกุล" in df_travel.columns:
+        for _, row in df_travel.iterrows():
+            name_t = str(row.get("ชื่อ-สกุล", "")).strip()
+            if not name_t or name_t.lower() == "nan":
+                continue
+            try:
+                s = pd.to_datetime(row.get("วันที่เริ่ม")).date()
+                e = pd.to_datetime(row.get("วันที่สิ้นสุด")).date()
+                proj = str(row.get("เรื่อง/กิจกรรม", "ไปราชการ"))
+                travel_index.setdefault(name_t, []).append((s, e, proj))
+            except Exception:
+                pass
+
+    leave_index: Dict[str, List[tuple]] = {}    # name → [(start_date, end_date, leave_type)]
+    if not df_leave.empty and "ชื่อ-สกุล" in df_leave.columns:
+        for _, row in df_leave.iterrows():
+            name_l = str(row.get("ชื่อ-สกุล", "")).strip()
+            if not name_l or name_l.lower() == "nan":
+                continue
+            try:
+                s = pd.to_datetime(row.get("วันที่เริ่ม")).date()
+                e = pd.to_datetime(row.get("วันที่สิ้นสุด")).date()
+                ltype = str(row.get("ประเภทการลา", "ลา"))
+                leave_index.setdefault(name_l, []).append((s, e, ltype))
+            except Exception:
+                pass
+
     # ── คำนวณข้อมูลรายวัน ────────────────────────────────────
     records = []
     prog = st.progress(0, text="กำลังประมวลผล...")
     for i, name in enumerate(names_to_process):
         prog.progress((i + 1) / len(names_to_process), text=f"กำลังประมวลผล {name}...")
         for d in all_dates:
-            d_date = d.date()
-            rec = {"ชื่อพนักงาน": name, "วันที่": d_date, "เดือน": d.strftime("%Y-%m"),
-                   "เวลาเข้า": "", "เวลาออก": "", "สถานะ": ""}
-            att = df_months_att[(df_months_att[name_col] == name) & (df_months_att["วันที่"] == d)] if not df_months_att.empty else pd.DataFrame()
+            d_date = d.date()   # ใช้ date object เพื่อ comparison ที่ consistent
+            rec = {
+                "ชื่อพนักงาน": name,
+                "วันที่":       d_date,
+                "เดือน":        d.strftime("%Y-%m"),
+                "เวลาเข้า":     "",
+                "เวลาออก":      "",
+                "สถานะ":        "",
+            }
+            # ── lookup สแกน (เทียบด้วย date object)
+            att = (
+                df_months_att[
+                    (df_months_att[name_col] == name)
+                    & (df_months_att["วันที่"].dt.date == d_date)
+                ]
+                if not df_months_att.empty else pd.DataFrame()
+            )
 
-            # ตรวจวันหยุดพิเศษก่อน (มีความสำคัญสูงกว่าสถานะอื่น ยกเว้นการลา)
+            # ── วันหยุดพิเศษ
             is_special_hday = d_date in holiday_dates_set
             special_hday_name = get_holiday_name(d_date, holiday_df_lookup) if is_special_hday else ""
 
+            # ── ตรวจการลา (ใช้ pre-index)
             in_leave, leave_type = False, ""
-            ul = df_leave[df_leave["ชื่อ-สกุล"] == name] if not df_leave.empty else pd.DataFrame()
-            if not ul.empty:
-                ml = ul[(ul["วันที่เริ่ม"] <= d) & (ul["วันที่สิ้นสุด"] >= d)]
-                if not ml.empty:
-                    in_leave, leave_type = True, ml.iloc[0].get("ประเภทการลา", "")
+            for ls, le, ltype in leave_index.get(name, []):
+                if ls <= d_date <= le:
+                    in_leave, leave_type = True, ltype
+                    break
 
-            in_travel = False
-            ut = df_travel[df_travel["ชื่อ-สกุล"] == name] if not df_travel.empty else pd.DataFrame()
-            if not ut.empty:
-                mt = ut[(ut["วันที่เริ่ม"] <= d) & (ut["วันที่สิ้นสุด"] >= d)]
-                in_travel = not mt.empty
+            # ── ตรวจไปราชการ (ใช้ pre-index) + เก็บชื่อโครงการ
+            in_travel, travel_project = False, ""
+            for ts, te, proj in travel_index.get(name, []):
+                if ts <= d_date <= te:
+                    in_travel, travel_project = True, proj
+                    break
 
             if in_leave:
                 rec["สถานะ"] = f"ลา ({leave_type})"
             elif in_travel:
-                rec["สถานะ"] = "ไปราชการ"
+                rec["สถานะ"] = f"ไปราชการ ({travel_project})" if travel_project and travel_project != "ไปราชการ" else "ไปราชการ"
             elif d.weekday() >= 5:
                 rec["สถานะ"] = "วันหยุด"
             elif is_special_hday:
@@ -1376,14 +1446,15 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
     df_daily = pd.DataFrame(records).sort_values(["ชื่อพนักงาน","วันที่"])
 
     def simplify_status(s):
-        """ย่อ status สำหรับ pivot table — รวม HR คีย์แทน เข้าหมวดเดียวกับ base status"""
+        """ย่อ status สำหรับ pivot table"""
         if not isinstance(s, str):
             return s
-        if s.startswith("ลา (") or s == "ลา":
+        if s.startswith("ลา"):
             return "ลา"
         if s.startswith("วันหยุด"):
             return "วันหยุด"
-        # ถอด suffix "(HR คีย์แทน)" ออกเพื่อ group รวมกับสแกนจริง
+        if s.startswith("ไปราชการ"):
+            return "ไปราชการ"
         clean = s.replace(" (HR คีย์แทน)", "").strip()
         return clean
     df_daily["สถานะย่อ"] = df_daily["สถานะ"].apply(simplify_status)
