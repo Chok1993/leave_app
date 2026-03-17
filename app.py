@@ -1440,302 +1440,423 @@ elif menu == "📊 Dashboard & รายงาน":
     st.markdown('<div class="section-header">📊 Dashboard & วิเคราะห์ข้อมูล</div>', unsafe_allow_html=True)
 
     with st.spinner("กำลังโหลดข้อมูล..."):
-        df_leave  = read_excel_from_drive(FILE_LEAVE)
-        df_travel = read_excel_from_drive(FILE_TRAVEL)
-        df_att    = read_attendance_report()
-        df_leave, df_travel, df_att = preprocess_dataframes(df_leave, df_travel, df_att)
+        df_leave   = read_excel_from_drive(FILE_LEAVE)
+        df_travel  = read_excel_from_drive(FILE_TRAVEL)
+        df_att_raw = read_attendance_report()
+        df_staff   = read_excel_from_drive(FILE_STAFF)
+        df_leave, df_travel, df_att_raw = preprocess_dataframes(df_leave, df_travel, df_att_raw)
+        df_manual  = load_manual_scans()
+        df_att     = merge_attendance_with_manual(df_att_raw, df_manual)
+        df_travel_all = load_all_travel()
+        _, df_travel_pp, _ = preprocess_dataframes(df_leave, df_travel_all, pd.DataFrame())
 
-    # KPIs
-    c1, c2, c3 = st.columns(3)
-    c1.metric("📋 จำนวนการลา (ทั้งหมด)", len(df_leave))
-    c2.metric("🚗 จำนวนไปราชการ (ทั้งหมด)", len(df_travel))
-    c3.metric("👆 ข้อมูลสแกนนิ้ว", len(df_att))
+    # ── CSS เฉพาะ Dashboard ──────────────────────────────────────────
+    st.markdown("""
+    <style>
+    .kpi-card {
+        background:linear-gradient(135deg,#1e293b 0%,#0f172a 100%);
+        border-radius:14px; padding:20px 22px; border-left:4px solid;
+        color:#f1f5f9; margin-bottom:4px;
+    }
+    .kpi-label { font-size:0.8rem; color:#94a3b8; font-weight:500; letter-spacing:.5px; }
+    .kpi-value { font-size:2rem; font-weight:800; margin:4px 0; line-height:1; }
+    .kpi-sub   { font-size:0.72rem; color:#64748b; margin-top:4px; }
+    .insight-card {
+        background:#1e293b; border-radius:10px; padding:14px 16px;
+        border-left:3px solid #3b82f6; margin:6px 0; color:#e2e8f0;
+    }
+    .insight-num  { color:#60a5fa; font-weight:700; font-size:0.85rem; }
+    .insight-title{ color:#cbd5e1; font-weight:600; font-size:0.85rem; }
+    .insight-body { color:#94a3b8; font-size:0.82rem; margin-top:2px; }
+    .section-card {
+        background:#1e293b; border-radius:12px; padding:18px 20px;
+        border:1px solid #334155; margin-bottom:12px;
+    }
+    .sec-title { color:#e2e8f0; font-weight:700; font-size:1rem; margin-bottom:12px; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    st.divider()
-    tab_a, tab_b, tab_c, tab_late, tab_d, tab_person = st.tabs([
-        "🏆 Top Charts", "📈 แนวโน้มรายเดือน",
-        "🏢 แยกกลุ่มงาน", "⏰ สถิติการมาสาย", "📥 Export รายงาน", "👤 สรุปรายบุคคล",
+    # ── คำนวณตัวเลขสำคัญ ──────────────────────────────────────────────
+    LATE_CUT = dt.time(8, 31)
+
+    def _att_status(row):
+        if pd.to_datetime(row["วันที่"], errors="coerce").weekday() >= 5:
+            return "วันหยุด"
+        t_in  = parse_time(row.get("เวลาเข้า", ""))
+        t_out = parse_time(row.get("เวลาออก",  ""))
+        if not t_in and not t_out: return "ขาดงาน"
+        if (t_in and not t_out) or (not t_in and t_out) or (t_in == t_out): return "ลืมสแกน"
+        if t_in >= LATE_CUT: return "มาสาย"
+        return "มาปกติ"
+
+    if not df_att.empty:
+        df_att["วันที่"] = pd.to_datetime(df_att["วันที่"], errors="coerce")
+        df_att["เดือน"]  = df_att["วันที่"].dt.strftime("%Y-%m")
+        df_att["สถานะสแกน"] = df_att.apply(_att_status, axis=1)
+        df_work = df_att[~df_att["สถานะสแกน"].isin(["วันหยุด"])]
+        total_work = len(df_work)
+        n_ok     = len(df_work[df_work["สถานะสแกน"] == "มาปกติ"])
+        n_late   = len(df_work[df_work["สถานะสแกน"] == "มาสาย"])
+        n_absent = len(df_work[df_work["สถานะสแกน"] == "ขาดงาน"])
+        n_forgot = len(df_work[df_work["สถานะสแกน"] == "ลืมสแกน"])
+        pct_ok     = n_ok     / total_work * 100 if total_work else 0
+        pct_late   = n_late   / total_work * 100 if total_work else 0
+        pct_absent = n_absent / total_work * 100 if total_work else 0
+    else:
+        total_work = n_ok = n_late = n_absent = n_forgot = 0
+        pct_ok = pct_late = pct_absent = 0
+
+    # ── KPI CARDS ─────────────────────────────────────────────────────
+    kc1, kc2, kc3, kc4 = st.columns(4)
+    kpi_data = [
+        (kc1, "🗓️ วันทำการรวม",    f"{total_work:,}", f"จากข้อมูลสแกน {len(df_att):,} รายการ", "#3b82f6"),
+        (kc2, "✅ อัตรามาปกติ",    f"{pct_ok:.1f}%",   f"มาปกติ {n_ok:,} วัน",   "#22c55e"),
+        (kc3, "⏰ อัตรามาสาย",     f"{pct_late:.1f}%", f"มาสาย {n_late:,} วัน",  "#f59e0b"),
+        (kc4, "❌ อัตราขาดงาน",    f"{pct_absent:.1f}%",f"ขาด {n_absent:,} วัน",  "#ef4444"),
+    ]
+    for col, label, val, sub, border_col in kpi_data:
+        with col:
+            st.markdown(f"""
+            <div class="kpi-card" style="border-color:{border_col}">
+                <div class="kpi-label">{label}</div>
+                <div class="kpi-value" style="color:{border_col}">{val}</div>
+                <div class="kpi-sub">{sub}</div>
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    tab_summary, tab_trend, tab_charts, tab_insight, tab_export = st.tabs([
+        "📋 ตารางสรุปรายบุคคล",
+        "📈 แนวโน้มรายเดือน",
+        "📊 กราฟวิเคราะห์",
+        "🔍 7 ข้อวิเคราะห์",
+        "📥 Export รายงาน",
     ])
 
-    with tab_a:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("วันลารวมแยกตามกลุ่มงาน (Top 10)")
-            if not df_leave.empty and "กลุ่มงาน" in df_leave.columns:
-                df_c = df_leave.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().nlargest(10).reset_index()
-                chart = alt.Chart(df_c).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
-                    x=alt.X("จำนวนวันลา:Q", title="วันลารวม"),
-                    y=alt.Y("กลุ่มงาน:N", sort="-x", title=""),
-                    color=alt.value("#6366f1"),
-                    tooltip=["กลุ่มงาน", "จำนวนวันลา"],
-                ).properties(height=320)
-                st.altair_chart(chart, use_container_width=True)
-            else:
-                st.info("ไม่มีข้อมูล")
+    # ═══════════════════════════════════════════════════
+    # TAB 1: ตารางสรุปรายบุคคล + Conditional Formatting
+    # ═══════════════════════════════════════════════════
+    with tab_summary:
+        st.markdown('<div class="sec-title">📋 ตารางสรุปรายบุคคล — อัตรามาปกติ (%) พร้อม Conditional Formatting</div>', unsafe_allow_html=True)
 
-        with col2:
-            st.subheader("ประเภทการลา (สัดส่วน)")
-            if not df_leave.empty and "ประเภทการลา" in df_leave.columns:
-                df_pie = df_leave["ประเภทการลา"].value_counts().reset_index()
-                df_pie.columns = ["ประเภท", "จำนวนครั้ง"]
-                pie = alt.Chart(df_pie).mark_arc(innerRadius=50).encode(
-                    theta=alt.Theta("จำนวนครั้ง:Q"),
-                    color=alt.Color("ประเภท:N", legend=alt.Legend(orient="bottom")),
-                    tooltip=["ประเภท", "จำนวนครั้ง"],
-                ).properties(height=280)
-                st.altair_chart(pie, use_container_width=True)
-            else:
-                st.info("ไม่มีข้อมูล")
+        # filter
+        sf1, sf2, sf3 = st.columns([1, 2, 2])
+        with sf1:
+            all_months_s = sorted(df_att["เดือน"].dropna().unique().tolist()) if not df_att.empty else []
+            sel_s_month  = st.selectbox("เดือน", ["ทั้งหมด"] + all_months_s, key="s_month")
+        with sf2:
+            sel_s_grp = st.selectbox("กลุ่มงาน", ["ทุกกลุ่ม"] + STAFF_GROUPS, key="s_grp")
+        with sf3:
+            search_s = st.text_input("🔍 ค้นหาชื่อ", placeholder="...", key="s_search")
 
-    with tab_b:
-        # [R2] แนวโน้มรายเดือน
-        st.subheader("📈 แนวโน้มการลาและไปราชการ (ย้อนหลัง 12 เดือน)")
+        df_s = df_work.copy() if not df_att.empty else pd.DataFrame()
+        if not df_s.empty:
+            if sel_s_month != "ทั้งหมด":
+                df_s = df_s[df_s["เดือน"] == sel_s_month]
+            if sel_s_grp != "ทุกกลุ่ม" and not df_staff.empty and "กลุ่มงาน" in df_staff.columns:
+                grp_set = set(df_staff[df_staff["กลุ่มงาน"] == sel_s_grp]["ชื่อ-สกุล"].astype(str).str.strip())
+                df_s = df_s[df_s["ชื่อ-สกุล"].isin(grp_set)]
+            if search_s.strip():
+                df_s = df_s[df_s["ชื่อ-สกุล"].str.contains(search_s.strip(), na=False)]
 
-        if not df_leave.empty and "วันที่เริ่ม" in df_leave.columns:
-            df_leave["เดือน"] = df_leave["วันที่เริ่ม"].dt.to_period("M").astype(str)
-            df_travel["เดือน"] = df_travel["วันที่เริ่ม"].dt.to_period("M").astype(str) if not df_travel.empty and "วันที่เริ่ม" in df_travel.columns else ""
-
-            df_trend_l = df_leave.groupby("เดือน")["จำนวนวันลา"].sum().reset_index()
-            df_trend_l.columns = ["เดือน", "จำนวน"]
-            df_trend_l["ประเภท"] = "วันลา"
-
-            df_trend_t = pd.DataFrame()
-            if not df_travel.empty and "เดือน" in df_travel.columns:
-                df_trend_t = df_travel.groupby("เดือน")["จำนวนวัน"].sum().reset_index()
-                df_trend_t.columns = ["เดือน", "จำนวน"]
-                df_trend_t["ประเภท"] = "วันราชการ"
-
-            df_trend = pd.concat([df_trend_l, df_trend_t], ignore_index=True).tail(24)
-
-            trend_chart = alt.Chart(df_trend).mark_line(point=True).encode(
-                x=alt.X("เดือน:O", title="เดือน"),
-                y=alt.Y("จำนวน:Q", title="จำนวนวัน"),
-                color=alt.Color("ประเภท:N"),
-                tooltip=["เดือน", "ประเภท", "จำนวน"],
-            ).properties(height=320)
-            st.altair_chart(trend_chart, use_container_width=True)
-        else:
-            st.info("ยังไม่มีข้อมูลเพียงพอ")
-
-    with tab_c:
-        # [R3] แยกกลุ่มงาน
-        st.subheader("🏢 สถิติแยกรายกลุ่มงาน")
-        if not df_leave.empty and "กลุ่มงาน" in df_leave.columns and "ประเภทการลา" in df_leave.columns:
-            df_grp = df_leave.groupby(["กลุ่มงาน", "ประเภทการลา"])["จำนวนวันลา"].sum().reset_index()
-            grouped_chart = alt.Chart(df_grp).mark_bar().encode(
-                x=alt.X("จำนวนวันลา:Q"),
-                y=alt.Y("กลุ่มงาน:N", sort="-x"),
-                color=alt.Color("ประเภทการลา:N"),
-                tooltip=["กลุ่มงาน", "ประเภทการลา", "จำนวนวันลา"],
-            ).properties(height=420)
-            st.altair_chart(grouped_chart, use_container_width=True)
-        else:
+        if df_s.empty:
             st.info("ไม่มีข้อมูล")
+        else:
+            summary_rows = []
+            for name, grp_df in df_s.groupby("ชื่อ-สกุล"):
+                dept = ""
+                if not df_staff.empty and "กลุ่มงาน" in df_staff.columns:
+                    m = df_staff[df_staff["ชื่อ-สกุล"] == name]
+                    if not m.empty: dept = str(m.iloc[0].get("กลุ่มงาน",""))
+                total = len(grp_df)
+                ok     = len(grp_df[grp_df["สถานะสแกน"] == "มาปกติ"])
+                late   = len(grp_df[grp_df["สถานะสแกน"] == "มาสาย"])
+                absent = len(grp_df[grp_df["สถานะสแกน"] == "ขาดงาน"])
+                forgot = len(grp_df[grp_df["สถานะสแกน"] == "ลืมสแกน"])
+                pct    = round(ok / total * 100, 1) if total > 0 else 0
+                summary_rows.append({"ชื่อ-สกุล": name, "กลุ่มงาน": dept,
+                                     "มาปกติ": ok, "มาสาย": late, "ขาดงาน": absent,
+                                     "ลืมสแกน": forgot, "วันรวม": total,
+                                     "% มาปกติ": pct})
+            df_sum = pd.DataFrame(summary_rows).sort_values("% มาปกติ", ascending=False).reset_index(drop=True)
 
-    # ─────────────────────────────────────────────
-    # ⏰ Tab: สถิติการมาสาย
-    # ─────────────────────────────────────────────
-    with tab_late:
-        st.subheader("⏰ สถิติการมาสาย / ออกก่อน")
+            # Conditional formatting function
+            def color_pct(val):
+                if not isinstance(val, (int, float)): return ""
+                if val >= 80: return "background-color:#166534;color:#dcfce7;font-weight:700"
+                if val >= 60: return "background-color:#854d0e;color:#fef9c3;font-weight:700"
+                return "background-color:#991b1b;color:#fee2e2;font-weight:700"
+
+            def color_absent(val):
+                if not isinstance(val, (int, float)) or val == 0: return ""
+                if val >= 5:  return "background-color:#7f1d1d;color:#fca5a5"
+                if val >= 2:  return "background-color:#b91c1c;color:#fecaca"
+                return "background-color:#dc2626;color:#fee2e2"
+
+            styled = (
+                df_sum.style
+                .applymap(color_pct,    subset=["% มาปกติ"])
+                .applymap(color_absent, subset=["ขาดงาน"])
+                .format({"% มาปกติ": "{:.1f}%"})
+                .set_properties(**{"font-size":"12px"})
+            )
+            st.dataframe(styled, use_container_width=True, height=450)
+            st.caption(f"แสดง {len(df_sum)} คน  |  🟢 ≥80%  🟡 60-79%  🔴 <60%")
+
+            # Export
+            buf_s = io.BytesIO()
+            with pd.ExcelWriter(buf_s, engine="xlsxwriter") as w:
+                df_sum.to_excel(w, index=False, sheet_name="รายบุคคล")
+            st.download_button("📥 Export ตาราง", buf_s.getvalue(),
+                               "PersonSummary.xlsx", mime=EXCEL_MIME)
+
+    # ═══════════════════════════════════════════════════
+    # TAB 2: แนวโน้มรายเดือน
+    # ═══════════════════════════════════════════════════
+    with tab_trend:
+        st.markdown('<div class="sec-title">📈 แนวโน้มรายเดือน</div>', unsafe_allow_html=True)
 
         if df_att.empty:
-            st.info("ยังไม่มีข้อมูลสแกนนิ้วในระบบ")
+            st.info("ไม่มีข้อมูล")
         else:
-            # ── filter: ปี / กลุ่มงาน
-            late_col1, late_col2, late_col3 = st.columns([1, 1, 2])
-            att_years = sorted(
-                df_att["วันที่"].dropna()
-                .pipe(lambda s: pd.to_datetime(s, errors="coerce"))
-                .dt.year.dropna().astype(int).unique().tolist(),
-                reverse=True,
+            df_monthly = (
+                df_work.groupby("เดือน")["สถานะสแกน"]
+                .value_counts().unstack(fill_value=0).reset_index()
             )
-            with late_col1:
-                sel_year = st.selectbox(
-                    "ปี", att_years,
-                    key="late_year",
-                )
-            with late_col2:
-                sel_late_group = st.selectbox(
-                    "กลุ่มงาน", ["ทุกกลุ่ม"] + STAFF_GROUPS,
-                    key="late_group",
-                )
-            with late_col3:
-                sel_late_status = st.multiselect(
-                    "สถานะที่ต้องการดู",
-                    ["มาสาย", "ลืมสแกน", "ขาดงาน"],
-                    default=["มาสาย"],
-                    key="late_status",
-                )
+            for col in ["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]:
+                if col not in df_monthly.columns: df_monthly[col] = 0
+            df_monthly["วันรวม"] = df_monthly[["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]].sum(axis=1)
+            df_monthly["% มาปกติ"] = (df_monthly["มาปกติ"] / df_monthly["วันรวม"].replace(0,1) * 100).round(1)
 
-            LATE_CUT_L = dt.time(8, 31)
+            # mini KPI row per month
+            for _, row_m in df_monthly.sort_values("เดือน").iterrows():
+                p = row_m.get("% มาปกติ", 0)
+                col_p = "#22c55e" if p >= 80 else ("#f59e0b" if p >= 60 else "#ef4444")
+                st.markdown(f"""
+                <div style="display:flex;align-items:center;gap:16px;background:#1e293b;
+                     border-radius:8px;padding:10px 16px;margin:4px 0;border:1px solid #334155;">
+                  <span style="color:#94a3b8;font-size:0.85rem;min-width:80px">{row_m['เดือน']}</span>
+                  <span style="color:{col_p};font-weight:800;font-size:1.1rem;min-width:64px">{p:.1f}%</span>
+                  <span style="color:#94a3b8;font-size:0.78rem">
+                    <span style="color:#22c55e">●</span> ปกติ {int(row_m.get('มาปกติ',0))}
+                    &nbsp;<span style="color:#f59e0b">●</span> สาย {int(row_m.get('มาสาย',0))}
+                    &nbsp;<span style="color:#ef4444">●</span> ขาด {int(row_m.get('ขาดงาน',0))}
+                    &nbsp;<span style="color:#8b5cf6">●</span> ลืมสแกน {int(row_m.get('ลืมสแกน',0))}
+                    &nbsp;รวม {int(row_m.get('วันรวม',0))} วัน
+                  </span>
+                  <div style="flex:1;background:#0f172a;border-radius:4px;height:8px;overflow:hidden">
+                    <div style="width:{min(p,100):.0f}%;background:{col_p};height:100%"></div>
+                  </div>
+                </div>""", unsafe_allow_html=True)
 
-            df_att_y = df_att.copy()
-            df_att_y["วันที่"] = pd.to_datetime(df_att_y["วันที่"], errors="coerce")
-            df_att_y = df_att_y[df_att_y["วันที่"].dt.year == sel_year]
+            st.divider()
+            st.dataframe(df_monthly[["เดือน","มาปกติ","มาสาย","ขาดงาน","ลืมสแกน","วันรวม","% มาปกติ"]]
+                         .sort_values("เดือน")
+                         .style.format({"% มาปกติ":"{:.1f}%"})
+                         .applymap(lambda v: f"background-color:#166534;color:#dcfce7" if isinstance(v,float) and v>=80
+                                   else (f"background-color:#991b1b;color:#fee2e2" if isinstance(v,float) and v<60 else ""),
+                                   subset=["% มาปกติ"]),
+                         use_container_width=True)
 
-            if df_att_y.empty:
-                st.info(f"ไม่มีข้อมูลสแกนในปี {sel_year}")
+    # ═══════════════════════════════════════════════════
+    # TAB 3: กราฟ 3 ตัว
+    # ═══════════════════════════════════════════════════
+    with tab_charts:
+        st.markdown('<div class="sec-title">📊 กราฟวิเคราะห์</div>', unsafe_allow_html=True)
+
+        if df_att.empty:
+            st.info("ไม่มีข้อมูล")
+        else:
+            df_monthly_c = (
+                df_work.groupby("เดือน")["สถานะสแกน"]
+                .value_counts().unstack(fill_value=0).reset_index()
+            )
+            for col in ["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]:
+                if col not in df_monthly_c.columns: df_monthly_c[col] = 0
+            df_monthly_c["วันรวม"] = df_monthly_c[["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]].sum(axis=1)
+            df_monthly_c["% มาปกติ"] = (df_monthly_c["มาปกติ"] / df_monthly_c["วันรวม"].replace(0,1) * 100).round(1)
+            df_monthly_c = df_monthly_c.sort_values("เดือน")
+
+            # ── Chart 1: Line Trend (% มาปกติ) ──────────────────────
+            st.subheader("1️⃣ Line Trend — อัตรามาปกติ (%)")
+            line_data = df_monthly_c[["เดือน","% มาปกติ"]].copy()
+            line_data.columns = ["เดือน","อัตรามาปกติ (%)"]
+            line_ch = (
+                alt.Chart(line_data)
+                .mark_line(point=alt.OverlayMarkDef(filled=True, size=80), strokeWidth=2.5)
+                .encode(
+                    x=alt.X("เดือน:O", title="เดือน"),
+                    y=alt.Y("อัตรามาปกติ (%):Q", title="%", scale=alt.Scale(domain=[0,100])),
+                    color=alt.value("#3b82f6"),
+                    tooltip=["เดือน","อัตรามาปกติ (%)"],
+                )
+                + alt.Chart(pd.DataFrame({"y":[80]}))
+                .mark_rule(strokeDash=[4,4], color="#22c55e", opacity=0.6)
+                .encode(y="y:Q")
+            )
+            st.altair_chart(line_ch, use_container_width=True)
+            st.caption("เส้นประเขียว = เกณฑ์ 80%")
+
+            st.divider()
+
+            # ── Chart 2: Stacked Bar ──────────────────────────────────
+            st.subheader("2️⃣ Stacked Bar — จำนวนวันแยกสถานะรายเดือน")
+            df_melt = df_monthly_c[["เดือน","มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]].melt(
+                id_vars="เดือน", var_name="สถานะ", value_name="วัน"
+            )
+            color_scale = alt.Scale(
+                domain=["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"],
+                range=["#22c55e","#f59e0b","#ef4444","#8b5cf6"]
+            )
+            bar_ch = (
+                alt.Chart(df_melt)
+                .mark_bar()
+                .encode(
+                    x=alt.X("เดือน:O", title="เดือน"),
+                    y=alt.Y("วัน:Q", stack="zero", title="จำนวนวัน"),
+                    color=alt.Color("สถานะ:N", scale=color_scale,
+                                    legend=alt.Legend(orient="bottom")),
+                    tooltip=["เดือน","สถานะ","วัน"],
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(bar_ch, use_container_width=True)
+
+            st.divider()
+
+            # ── Chart 3: Rate Line (มาสาย + ขาดงาน) ─────────────────
+            st.subheader("3️⃣ Rate Line — แนวโน้มมาสาย & ขาดงาน")
+            df_rate = df_monthly_c[["เดือน","มาสาย","ขาดงาน","วันรวม"]].copy()
+            df_rate["% มาสาย"]  = (df_rate["มาสาย"]   / df_rate["วันรวม"].replace(0,1) * 100).round(1)
+            df_rate["% ขาดงาน"] = (df_rate["ขาดงาน"]  / df_rate["วันรวม"].replace(0,1) * 100).round(1)
+            df_rate_melt = df_rate[["เดือน","% มาสาย","% ขาดงาน"]].melt(
+                id_vars="เดือน", var_name="ประเภท", value_name="%"
+            )
+            rate_ch = (
+                alt.Chart(df_rate_melt)
+                .mark_line(point=alt.OverlayMarkDef(filled=True, size=60), strokeWidth=2)
+                .encode(
+                    x=alt.X("เดือน:O"),
+                    y=alt.Y("%:Q", title="%"),
+                    color=alt.Color("ประเภท:N",
+                        scale=alt.Scale(domain=["% มาสาย","% ขาดงาน"],
+                                        range=["#f59e0b","#ef4444"]),
+                        legend=alt.Legend(orient="bottom")),
+                    tooltip=["เดือน","ประเภท","%"],
+                )
+                .properties(height=280)
+            )
+            st.altair_chart(rate_ch, use_container_width=True)
+
+    # ═══════════════════════════════════════════════════
+    # TAB 4: 7 ข้อวิเคราะห์
+    # ═══════════════════════════════════════════════════
+    with tab_insight:
+        st.markdown('<div class="sec-title">🔍 7 ข้อวิเคราะห์สำคัญ</div>', unsafe_allow_html=True)
+
+        if df_att.empty:
+            st.info("ไม่มีข้อมูล")
+        else:
+            insights = []
+
+            # 1. อัตรามาปกติโดยรวม
+            status_txt = "✅ ผ่านเกณฑ์ 80%" if pct_ok >= 80 else "⚠️ ต่ำกว่าเกณฑ์ 80%"
+            insights.append(("อัตรามาปกติโดยรวม",
+                f"อยู่ที่ **{pct_ok:.1f}%** — {status_txt}  "
+                f"(มาปกติ {n_ok:,} วัน จากวันทำการรวม {total_work:,} วัน)"))
+
+            # 2. เดือนที่อัตรามาปกติสูงสุด-ต่ำสุด
+            if not df_att.empty and "เดือน" in df_att.columns:
+                df_m2 = df_work.groupby("เดือน").apply(
+                    lambda g: round(len(g[g["สถานะสแกน"]=="มาปกติ"])/max(len(g),1)*100,1)
+                ).reset_index(name="%")
+                if not df_m2.empty:
+                    best = df_m2.loc[df_m2["%"].idxmax()]
+                    worst = df_m2.loc[df_m2["%"].idxmin()]
+                    insights.append(("เดือนที่มีอัตรามาปกติสูงสุด-ต่ำสุด",
+                        f"สูงสุด: **{best['เดือน']}** ({best['%']:.1f}%)  |  "
+                        f"ต่ำสุด: **{worst['เดือน']}** ({worst['%']:.1f}%)"))
+
+            # 3. กลุ่มงานที่มีการลามากสุด
+            if not df_leave.empty and "กลุ่มงาน" in df_leave.columns and "จำนวนวันลา" in df_leave.columns:
+                top_lv = df_leave.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().idxmax()
+                top_lv_val = df_leave.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().max()
+                insights.append(("กลุ่มงานที่มีวันลารวมมากที่สุด",
+                    f"**{top_lv}** มีวันลารวม {int(top_lv_val)} วัน"))
+
+            # 4. วันขาดงานรวม
+            insights.append(("จำนวนวันขาดงานรวมทั้งหมด",
+                f"**{n_absent:,} วัน** คิดเป็น **{pct_absent:.1f}%** ของวันทำการรวม  "
+                f"{'⚠️ สูงกว่า 5% ควรติดตาม' if pct_absent > 5 else '✅ อยู่ในเกณฑ์ปกติ'}"))
+
+            # 5. ไปราชการสูงสุด
+            if not df_travel_all.empty and "จำนวนวัน" in df_travel_all.columns:
+                max_travel = df_travel_all.groupby("ชื่อ-สกุล")["จำนวนวัน"].sum().idxmax() if not df_travel_all.empty else "-"
+                max_travel_val = df_travel_all.groupby("ชื่อ-สกุล")["จำนวนวัน"].sum().max() if not df_travel_all.empty else 0
+                insights.append(("ผู้ที่ไปราชการสะสมมากสุด",
+                    f"**{max_travel}** รวม {int(max_travel_val)} วัน"))
             else:
-                df_staff_dash = read_excel_from_drive(FILE_STAFF)
-                names_in_group = None
-                if sel_late_group != "ทุกกลุ่ม" and not df_staff_dash.empty and "กลุ่มงาน" in df_staff_dash.columns:
-                    names_in_group = set(
-                        df_staff_dash[df_staff_dash["กลุ่มงาน"] == sel_late_group]["ชื่อ-สกุล"]
-                        .astype(str).str.strip().tolist()
-                    )
-                    df_att_y = df_att_y[df_att_y["ชื่อ-สกุล"].isin(names_in_group)]
+                insights.append(("ข้อมูลไปราชการ",
+                    f"มีทั้งหมด **{len(df_travel_all):,} รายการ** จาก {len(df_travel_all['ชื่อ-สกุล'].unique()) if not df_travel_all.empty else 0} คน"))
 
-                def calc_late_status(row) -> str:
-                    if pd.to_datetime(row["วันที่"], errors="coerce").weekday() >= 5:
-                        return "วันหยุด"
-                    t_in  = parse_time(row.get("เวลาเข้า", ""))
-                    t_out = parse_time(row.get("เวลาออก",  ""))
-                    if not t_in and not t_out:
-                        return "ขาดงาน"
-                    if (t_in and not t_out) or (not t_in and t_out) or (t_in == t_out):
-                        return "ลืมสแกน"
-                    if t_in >= LATE_CUT_L:
-                        return "มาสาย"
-                    return "มาปกติ"
+            # 6. ลืมสแกน
+            pct_forgot = n_forgot / total_work * 100 if total_work else 0
+            insights.append(("สัดส่วนลืมสแกนนิ้ว",
+                f"รวม **{n_forgot:,} วัน** คิดเป็น **{pct_forgot:.1f}%**  "
+                f"{'⚠️ ควรปรับปรุงระบบหรือแจ้งเตือนบุคลากร' if pct_forgot > 3 else '✅ อยู่ในระดับที่ยอมรับได้'}"))
 
-                df_att_y["สถานะสแกน"] = df_att_y.apply(calc_late_status, axis=1)
-                df_att_y["เดือน"] = df_att_y["วันที่"].dt.strftime("%Y-%m")
+            # 7. แนวโน้มล่าสุด
+            if not df_att.empty:
+                recent_months = sorted(df_work["เดือน"].dropna().unique().tolist())
+                if len(recent_months) >= 2:
+                    def _pct_month(mo):
+                        g = df_work[df_work["เดือน"]==mo]
+                        return round(len(g[g["สถานะสแกน"]=="มาปกติ"])/max(len(g),1)*100,1)
+                    last_m  = recent_months[-1]
+                    prev_m  = recent_months[-2]
+                    last_p  = _pct_month(last_m)
+                    prev_p  = _pct_month(prev_m)
+                    diff    = last_p - prev_p
+                    arrow   = "📈" if diff > 0 else ("📉" if diff < 0 else "➡️")
+                    insights.append(("แนวโน้มอัตรามาปกติ (เดือนล่าสุด vs เดือนก่อน)",
+                        f"{arrow} **{last_m}** ({last_p:.1f}%) vs **{prev_m}** ({prev_p:.1f}%)  "
+                        f"{'ดีขึ้น +' if diff>0 else 'ลดลง '}{abs(diff):.1f}%  "
+                        f"{'✅ อยู่ในเกณฑ์ดี' if last_p>=80 else '⚠️ ต้องติดตาม'}"))
 
-                # ── KPI row
-                total_days   = len(df_att_y[~df_att_y["สถานะสแกน"].isin(["วันหยุด"])])
-                total_late   = len(df_att_y[df_att_y["สถานะสแกน"] == "มาสาย"])
-                total_forgot = len(df_att_y[df_att_y["สถานะสแกน"] == "ลืมสแกน"])
-                total_absent = len(df_att_y[df_att_y["สถานะสแกน"] == "ขาดงาน"])
-                late_rate    = f"{total_late/total_days*100:.1f}%" if total_days > 0 else "—"
+            # render cards
+            border_colors = ["#3b82f6","#22c55e","#f59e0b","#ef4444","#8b5cf6","#ec4899","#06b6d4"]
+            for i, (title, body) in enumerate(insights):
+                bc = border_colors[i % len(border_colors)]
+                st.markdown(f"""
+                <div class="insight-card" style="border-color:{bc}">
+                    <span class="insight-num">{i+1}.</span>
+                    <span class="insight-title"> {title}</span>
+                    <div class="insight-body">{body}</div>
+                </div>""", unsafe_allow_html=True)
 
-                kc1, kc2, kc3, kc4 = st.columns(4)
-                kc1.metric("⏰ มาสาย",       f"{total_late} ครั้ง",   f"อัตรา {late_rate}")
-                kc2.metric("🔔 ลืมสแกน",     f"{total_forgot} ครั้ง")
-                kc3.metric("❌ ขาดงาน",      f"{total_absent} ครั้ง")
-                kc4.metric("📅 วันทำการรวม", f"{total_days} วัน")
-
-                st.divider()
-
-                # ── กราฟแนวโน้มรายเดือน
-                STATUS_DOMAIN = ["มาสาย", "ลืมสแกน", "ขาดงาน"]
-                STATUS_RANGE  = ["#F59E0B", "#8B5CF6", "#991B1B"]
-
-                df_late_trend = (
-                    df_att_y[df_att_y["สถานะสแกน"].isin(STATUS_DOMAIN)]
-                    .groupby(["เดือน","สถานะสแกน"])
-                    .size()
-                    .reset_index(name="จำนวนครั้ง")
-                )
-
-                if not df_late_trend.empty:
-                    late_chart = (
-                        alt.Chart(df_late_trend)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("เดือน:O", title="เดือน", sort=None),
-                            y=alt.Y("จำนวนครั้ง:Q", title="จำนวนครั้ง", stack="zero"),
-                            color=alt.Color(
-                                "สถานะสแกน:N",
-                                scale=alt.Scale(domain=STATUS_DOMAIN, range=STATUS_RANGE),
-                                legend=alt.Legend(orient="bottom"),
-                            ),
-                            tooltip=["เดือน","สถานะสแกน","จำนวนครั้ง"],
-                        )
-                        .properties(height=280, title=f"แนวโน้มการมาสาย/ขาดงาน ปี {sel_year}")
-                    )
-                    st.altair_chart(late_chart, use_container_width=True)
-                else:
-                    st.success("🎉 ไม่พบข้อมูลการมาสายหรือขาดงานในปีนี้")
-
-                st.divider()
-
-                # ── Top ผู้มาสายบ่อย (จำแนกตามสถานะที่เลือก)
-                if sel_late_status:
-                    df_top_late = (
-                        df_att_y[df_att_y["สถานะสแกน"].isin(sel_late_status)]
-                        .groupby("ชื่อ-สกุล")
-                        .size()
-                        .reset_index(name="จำนวนครั้ง")
-                        .sort_values("จำนวนครั้ง", ascending=False)
-                        .head(15)
-                    )
-                    if not df_top_late.empty:
-                        st.subheader(f"🏅 Top 15 ผู้มีสถานะ {' / '.join(sel_late_status)} บ่อยที่สุด")
-                        top_chart = (
-                            alt.Chart(df_top_late)
-                            .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
-                            .encode(
-                                x=alt.X("จำนวนครั้ง:Q", title="จำนวนครั้ง"),
-                                y=alt.Y("ชื่อ-สกุล:N", sort="-x", title=""),
-                                color=alt.value("#F59E0B"),
-                                tooltip=["ชื่อ-สกุล","จำนวนครั้ง"],
-                            )
-                            .properties(height=max(200, len(df_top_late) * 24))
-                        )
-                        st.altair_chart(top_chart, use_container_width=True)
-
-                        # ตาราง export
-                        st.subheader("📋 รายละเอียดรายคน")
-                        df_person_detail = (
-                            df_att_y[df_att_y["สถานะสแกน"].isin(sel_late_status)]
-                            .groupby(["ชื่อ-สกุล","สถานะสแกน"])
-                            .size()
-                            .reset_index(name="จำนวนครั้ง")
-                            .pivot_table(
-                                index="ชื่อ-สกุล",
-                                columns="สถานะสแกน",
-                                values="จำนวนครั้ง",
-                                fill_value=0,
-                            )
-                            .reset_index()
-                        )
-                        st.dataframe(df_person_detail, use_container_width=True)
-
-                        buf_late = io.BytesIO()
-                        with pd.ExcelWriter(buf_late, engine="xlsxwriter") as w:
-                            df_person_detail.to_excel(w, index=False, sheet_name="สรุปรายคน")
-                            df_att_y[df_att_y["สถานะสแกน"].isin(sel_late_status)].to_excel(
-                                w, index=False, sheet_name="รายการทั้งหมด"
-                            )
-                        buf_late.seek(0)
-                        st.download_button(
-                            "📥 Export รายงานการมาสาย",
-                            buf_late,
-                            f"LateReport_{sel_year}_{sel_late_group}.xlsx",
-                            mime=EXCEL_MIME,
-                        )
-                    else:
-                        st.success("🎉 ไม่พบข้อมูลสถานะที่เลือกในปีนี้")
-
-    with tab_d:
-        # [R5] Export Excel หลายชีต
-        st.subheader("📥 Export รายงานสรุปผู้บริหาร")
-
+    # ═══════════════════════════════════════════════════
+    # TAB 5: Export
+    # ═══════════════════════════════════════════════════
+    with tab_export:
+        st.subheader("📥 Export รายงาน")
         today = dt.date.today()
-        month_opts = pd.date_range(
-            start=f"{today.year - 2}-01-01",
-            end=f"{today.year + 1}-12-31",
-            freq="MS"
+        month_opts_e = pd.date_range(
+            start=f"{today.year-2}-01-01", end=f"{today.year+1}-12-31", freq="MS"
         ).strftime("%Y-%m").tolist()
         cur_ym = today.strftime("%Y-%m")
-        default_i = month_opts.index(cur_ym) if cur_ym in month_opts else 0
-        export_month = st.selectbox("เลือกเดือน", month_opts, index=default_i)
+        default_i_e = month_opts_e.index(cur_ym) if cur_ym in month_opts_e else 0
+        export_month = st.selectbox("เลือกเดือน", month_opts_e, index=default_i_e)
 
         if st.button("📊 สร้างรายงาน Excel", use_container_width=True, type="primary"):
             with st.spinner("กำลังสร้างรายงาน..."):
                 m_start = pd.to_datetime(export_month + "-01")
                 m_end   = m_start + pd.offsets.MonthEnd(0)
-
                 df_lm = df_leave[(df_leave["วันที่เริ่ม"] >= m_start) & (df_leave["วันที่เริ่ม"] <= m_end)] if not df_leave.empty else pd.DataFrame()
                 df_tm = df_travel[(df_travel["วันที่เริ่ม"] >= m_start) & (df_travel["วันที่เริ่ม"] <= m_end)] if not df_travel.empty else pd.DataFrame()
-
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-                    wb = writer.book
-
-                    # Sheet สรุป
                     summary_data = {
-                        "รายการ": ["จำนวนการลา (ครั้ง)", "จำนวนวันลารวม", "จำนวนไปราชการ (ครั้ง)", "จำนวนวันราชการรวม"],
+                        "รายการ": ["การลา (ครั้ง)","วันลารวม","ไปราชการ (ครั้ง)","วันราชการรวม"],
                         "จำนวน": [
                             len(df_lm),
                             int(df_lm["จำนวนวันลา"].sum()) if not df_lm.empty and "จำนวนวันลา" in df_lm.columns else 0,
@@ -1744,364 +1865,14 @@ elif menu == "📊 Dashboard & รายงาน":
                         ],
                     }
                     pd.DataFrame(summary_data).to_excel(writer, sheet_name="📋 สรุป", index=False)
-                    if not df_lm.empty:
-                        df_lm.to_excel(writer, sheet_name="การลา", index=False)
-                    if not df_tm.empty:
-                        df_tm.to_excel(writer, sheet_name="ไปราชการ", index=False)
-                    # Sheet วันลารายประเภท
+                    if not df_lm.empty: df_lm.to_excel(writer, sheet_name="การลา", index=False)
+                    if not df_tm.empty: df_tm.to_excel(writer, sheet_name="ไปราชการ", index=False)
                     if not df_lm.empty and "ประเภทการลา" in df_lm.columns:
-                        df_lm.groupby("ประเภทการลา")["จำนวนวันลา"].sum().reset_index().to_excel(writer, sheet_name="ลาแยกประเภท", index=False)
-
-                st.download_button(
-                    "⬇️ ดาวน์โหลดรายงาน",
-                    output.getvalue(),
-                    f"HR_Report_{export_month}.xlsx",
-                    mime=EXCEL_MIME,
-                    use_container_width=True,
-                )
-
-    # ─────────────────────────────────────────────
-    # 👤 Tab: สรุปรายบุคคล
-    # ─────────────────────────────────────────────
-    with tab_person:
-        st.markdown("""
-        <style>
-        .person-card {
-            background: linear-gradient(135deg,#1e1b4b 0%,#1e293b 100%);
-            border-radius:16px; padding:20px; margin-bottom:16px;
-            border:1px solid #334155; color:#f1f5f9;
-        }
-        .person-name { font-size:1.1rem; font-weight:700; color:#e2e8f0; }
-        .person-dept { font-size:0.75rem; color:#94a3b8; margin-top:2px; }
-        .person-pct  { font-size:1.5rem; font-weight:800; }
-        .month-chip  {
-            background:#1e293b; border-radius:10px; padding:10px 12px;
-            text-align:center; border:1px solid #334155; font-size:0.75rem;
-        }
-        .month-label { color:#94a3b8; font-size:0.7rem; margin-bottom:4px; }
-        .pct-high    { color:#22c55e; font-size:1.1rem; font-weight:700; }
-        .pct-mid     { color:#f59e0b; font-size:1.1rem; font-weight:700; }
-        .pct-low     { color:#ef4444; font-size:1.1rem; font-weight:700; }
-        .stat-dot    { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; }
-        .dot-ok      { background:#22c55e; }
-        .dot-late    { background:#f59e0b; }
-        .dot-absent  { background:#ef4444; }
-        .dot-forgot  { background:#8b5cf6; }
-        .dot-leave   { background:#ec4899; }
-        </style>
-        """, unsafe_allow_html=True)
-
-        st.subheader("👤 สรุปการเข้างานรายบุคคล")
-
-        if df_att.empty:
-            st.info("ยังไม่มีข้อมูลสแกนนิ้วในระบบ")
-            st.stop()
-
-        # ── Load travel + leave สำหรับ merge ──────────────────
-        with st.spinner("กำลังประมวลผลข้อมูลรายบุคคล..."):
-            df_staff_p  = read_excel_from_drive(FILE_STAFF)
-            df_leave_p  = read_excel_from_drive(FILE_LEAVE)
-            df_travel_p = load_all_travel()
-            df_leave_p, df_travel_pp2, _ = preprocess_dataframes(df_leave_p, df_travel_p, pd.DataFrame())
-
-        # ── Filters ──────────────────────────────────────────
-        pf1, pf2, pf3, pf4 = st.columns([1, 2, 2, 2])
-        with pf1:
-            all_years_att = sorted(
-                df_att["วันที่"].dropna()
-                .pipe(lambda s: pd.to_datetime(s, errors="coerce"))
-                .dt.year.dropna().astype(int).unique().tolist(), reverse=True
-            )
-            sel_p_year = st.selectbox("ปีงบประมาณ", ["ทั้งหมด"] + [str(y) for y in all_years_att], key="p_year")
-        with pf2:
-            grp_opts = ["ทั้งหมด"] + STAFF_GROUPS
-            sel_p_grp = st.selectbox("กลุ่มงาน", grp_opts, key="p_grp")
-        with pf3:
-            all_months_att = sorted(
-                df_att["เดือน"].dropna().unique().tolist()
-            ) if "เดือน" in df_att.columns else []
-            sel_p_month = st.selectbox("ช่วงเดือน", ["ทั้งหมด"] + all_months_att, key="p_month")
-        with pf4:
-            search_name = st.text_input("🔍 ค้นหาชื่อ", placeholder="พิมพ์ชื่อ...", key="p_search")
-
-        # Sort
-        sort_opts = {"Sort Normal": "ชื่อ", "Sort % มากสุด": "pct_desc", "Sort % น้อยสุด": "pct_asc"}
-        sort_key = st.radio("เรียงลำดับ", list(sort_opts.keys()), horizontal=True, key="p_sort")
-
-        # ── Filter attendance data ──────────────────────────
-        df_att_p = df_att.copy()
-        df_att_p["วันที่"] = pd.to_datetime(df_att_p["วันที่"], errors="coerce")
-
-        if sel_p_year != "ทั้งหมด":
-            df_att_p = df_att_p[df_att_p["วันที่"].dt.year == int(sel_p_year)]
-        if sel_p_month != "ทั้งหมด" and "เดือน" in df_att_p.columns:
-            df_att_p = df_att_p[df_att_p["เดือน"] == sel_p_month]
-
-        # รายชื่อจาก staff master หรือ fallback จากข้อมูลสแกน
-        if not df_staff_p.empty and "ชื่อ-สกุล" in df_staff_p.columns:
-            all_people = sorted(df_staff_p["ชื่อ-สกุล"].dropna().astype(str).str.strip().unique().tolist())
-        else:
-            all_people = sorted(df_att_p["ชื่อ-สกุล"].dropna().astype(str).unique().tolist())
-
-        # กรองกลุ่มงาน
-        if sel_p_grp != "ทั้งหมด" and not df_staff_p.empty and "กลุ่มงาน" in df_staff_p.columns:
-            grp_names = set(
-                df_staff_p[df_staff_p["กลุ่มงาน"] == sel_p_grp]["ชื่อ-สกุล"]
-                .astype(str).str.strip().tolist()
-            )
-            all_people = [n for n in all_people if n in grp_names]
-
-        # กรองค้นหา
-        if search_name.strip():
-            all_people = [n for n in all_people if search_name.strip().lower() in n.lower()]
-
-        if not all_people:
-            st.warning("ไม่พบบุคลากรที่ตรงกับเงื่อนไข")
-            st.stop()
-
-        # ── Pre-build travel index ──────────────────────────
-        travel_idx_p: Dict[str, List[tuple]] = {}
-        if not df_travel_pp2.empty and "ชื่อ-สกุล" in df_travel_pp2.columns:
-            for _, tr in df_travel_pp2.iterrows():
-                try:
-                    s = pd.to_datetime(tr["วันที่เริ่ม"]).date()
-                    e = pd.to_datetime(tr["วันที่สิ้นสุด"]).date()
-                    nm = str(tr["ชื่อ-สกุล"]).strip()
-                    travel_idx_p.setdefault(nm, []).append((s, e))
-                    # ผู้ร่วมเดินทาง
-                    import re as _re2
-                    raw = str(tr.get("ผู้ร่วมเดินทาง","")).strip()
-                    if raw and raw not in ("-","nan",""):
-                        raw = _re2.sub(r"\d+\.\s*","", raw)
-                        for comp in raw.replace("\n",",").split(","):
-                            comp = comp.strip()
-                            if comp and len(comp)>=3:
-                                travel_idx_p.setdefault(comp, []).append((s, e))
-                except Exception:
-                    pass
-
-        leave_idx_p: Dict[str, List[tuple]] = {}
-        if not df_leave_p.empty and "ชื่อ-สกุล" in df_leave_p.columns:
-            for _, lv in df_leave_p.iterrows():
-                try:
-                    s = pd.to_datetime(lv["วันที่เริ่ม"]).date()
-                    e = pd.to_datetime(lv["วันที่สิ้นสุด"]).date()
-                    nm = str(lv["ชื่อ-สกุล"]).strip()
-                    leave_idx_p.setdefault(nm, []).append((s, e))
-                except Exception:
-                    pass
-
-        LATE_CUT_P = dt.time(8, 31)
-
-        # ── คำนวณสถิติรายบุคคล ─────────────────────────────
-        def calc_person_stats(name: str) -> dict:
-            df_per = df_att_p[df_att_p["ชื่อ-สกุล"] == name].copy()
-            if df_per.empty:
-                return {}
-
-            stats: Dict[str, dict] = {}   # month → {ok, late, absent, forgot, leave, travel, total}
-            for _, row in df_per.iterrows():
-                d = row["วันที่"]
-                if pd.isna(d): continue
-                d_date  = d.date()
-                d_month = d.strftime("%Y-%m")
-                month_th = f"{['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'][d.month-1]} {d.year+543-2500}"
-
-                if d.weekday() >= 5: continue  # ข้ามวันหยุด
-
-                # ตรวจลา
-                in_leave = any(ls <= d_date <= le for ls, le in leave_idx_p.get(name, []))
-                # ตรวจไปราชการ
-                in_travel = any(ts <= d_date <= te for ts, te in travel_idx_p.get(name, []))
-
-                if d_month not in stats:
-                    stats[d_month] = {"label": month_th, "ok":0,"late":0,"absent":0,"forgot":0,"leave":0,"travel":0,"total":0}
-
-                stats[d_month]["total"] += 1
-
-                if in_leave:
-                    stats[d_month]["leave"] += 1
-                    continue
-                if in_travel:
-                    stats[d_month]["travel"] += 1
-                    continue
-
-                t_in  = parse_time(row.get("เวลาเข้า",""))
-                t_out = parse_time(row.get("เวลาออก", ""))
-
-                if not t_in and not t_out:
-                    stats[d_month]["absent"] += 1
-                elif (t_in and not t_out) or (not t_in and t_out) or (t_in == t_out):
-                    stats[d_month]["forgot"] += 1
-                elif t_in >= LATE_CUT_P:
-                    stats[d_month]["late"]   += 1
-                else:
-                    stats[d_month]["ok"]     += 1
-
-            return stats
-
-        # ── Build cards data ────────────────────────────────
-        cards = []
-        for name in all_people:
-            dept = ""
-            if not df_staff_p.empty and "กลุ่มงาน" in df_staff_p.columns:
-                row_s = df_staff_p[df_staff_p["ชื่อ-สกุล"] == name]
-                if not row_s.empty:
-                    dept = str(row_s.iloc[0].get("กลุ่มงาน",""))
-
-            stats = calc_person_stats(name)
-            if not stats:
-                continue
-
-            total_ok     = sum(v["ok"]     for v in stats.values())
-            total_work   = sum(v["ok"]+v["late"]+v["absent"]+v["forgot"] for v in stats.values())
-            overall_pct  = round(total_ok / total_work * 100) if total_work > 0 else 0
-
-            cards.append({
-                "name": name, "dept": dept,
-                "stats": stats, "pct": overall_pct,
-                "ok": total_ok,
-                "late": sum(v["late"]   for v in stats.values()),
-                "absent": sum(v["absent"] for v in stats.values()),
-                "forgot": sum(v["forgot"] for v in stats.values()),
-                "leave": sum(v["leave"]  for v in stats.values()),
-            })
-
-        # Sort
-        if sort_opts[sort_key] == "pct_desc":
-            cards.sort(key=lambda x: -x["pct"])
-        elif sort_opts[sort_key] == "pct_asc":
-            cards.sort(key=lambda x: x["pct"])
-        else:
-            cards.sort(key=lambda x: x["name"])
-
-        # ── Overall summary bar ─────────────────────────────
-        if cards:
-            total_days_all = sum(c["ok"]+c["late"]+c["absent"]+c["forgot"] for c in cards)
-            pct_ok_all   = round(sum(c["ok"]     for c in cards)/total_days_all*100) if total_days_all else 0
-            pct_late_all = round(sum(c["late"]   for c in cards)/total_days_all*100) if total_days_all else 0
-            pct_abs_all  = round(sum(c["absent"] for c in cards)/total_days_all*100) if total_days_all else 0
-            pct_lv_all   = round(sum(c["leave"]  for c in cards)/total_days_all*100) if total_days_all else 0
-
-            st.markdown(f"""
-            <div style="background:#1e293b;border-radius:12px;padding:16px 24px;margin-bottom:16px;
-                        display:flex;gap:32px;align-items:center;flex-wrap:wrap;border:1px solid #334155;">
-                <div style="text-align:center">
-                    <div style="color:#22c55e;font-size:1.6rem;font-weight:800">{pct_ok_all}%</div>
-                    <div style="color:#94a3b8;font-size:0.72rem">มาปกติ</div>
-                </div>
-                <div style="text-align:center">
-                    <div style="color:#f59e0b;font-size:1.6rem;font-weight:800">{pct_late_all}%</div>
-                    <div style="color:#94a3b8;font-size:0.72rem">มาสาย</div>
-                </div>
-                <div style="text-align:center">
-                    <div style="color:#ef4444;font-size:1.6rem;font-weight:800">{pct_abs_all}%</div>
-                    <div style="color:#94a3b8;font-size:0.72rem">ขาดงาน</div>
-                </div>
-                <div style="text-align:center">
-                    <div style="color:#ec4899;font-size:1.6rem;font-weight:800">{pct_lv_all}%</div>
-                    <div style="color:#94a3b8;font-size:0.72rem">ลา</div>
-                </div>
-                <div style="text-align:center">
-                    <div style="color:#e2e8f0;font-size:1.6rem;font-weight:800">{len(cards)}</div>
-                    <div style="color:#94a3b8;font-size:0.72rem">จำนวนคน</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        # ── Render Cards (2 columns) ────────────────────────
-        st.caption(f"แสดง {len(cards)} คน")
-        MONTH_TH = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
-
-        for i in range(0, len(cards), 2):
-            col_l, col_r = st.columns(2)
-            for col_idx, col in enumerate([col_l, col_r]):
-                card_i = i + col_idx
-                if card_i >= len(cards):
-                    break
-                c = cards[card_i]
-                pct  = c["pct"]
-                pct_color = "#22c55e" if pct >= 80 else ("#f59e0b" if pct >= 60 else "#ef4444")
-                rank_num = card_i + 1
-
-                # Months sorted
-                sorted_months = sorted(c["stats"].items())
-
-                # Build month chips HTML
-                chips_html = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">'
-                for ym, s in sorted_months:
-                    work = s["ok"] + s["late"] + s["absent"] + s["forgot"]
-                    m_pct = round(s["ok"]/work*100) if work > 0 else 0
-                    m_color = "#22c55e" if m_pct >= 80 else ("#f59e0b" if m_pct >= 60 else "#ef4444")
-                    chips_html += f"""
-                    <div style="background:#0f172a;border-radius:8px;padding:8px 10px;
-                                text-align:center;border:1px solid #1e293b;min-width:72px;">
-                        <div style="color:#64748b;font-size:0.65rem">{s['label']}</div>
-                        <div style="color:{m_color};font-size:1rem;font-weight:700">{m_pct}%</div>
-                        <div style="color:#475569;font-size:0.65rem">{work} วัน</div>
-                        <div style="margin-top:4px;font-size:0.65rem;line-height:1.6">
-                            <span style="color:#22c55e">●</span> {s['ok']}
-                            <span style="color:#f59e0b;margin-left:4px">●</span> {s['late']}
-                            <span style="color:#ef4444;margin-left:4px">●</span> {s['absent']}
-                        </div>
-                    </div>"""
-                chips_html += "</div>"
-
-                # Stats summary
-                stats_html = f"""
-                <div style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap;font-size:0.75rem;">
-                    <span><span style="color:#22c55e">●</span> ปกติ <b>{c['ok']}</b></span>
-                    <span><span style="color:#f59e0b">●</span> สาย <b>{c['late']}</b></span>
-                    <span><span style="color:#ef4444">●</span> ขาด <b>{c['absent']}</b></span>
-                    <span><span style="color:#8b5cf6">●</span> ลืมสแกน <b>{c['forgot']}</b></span>
-                    <span><span style="color:#ec4899">●</span> ลา <b>{c['leave']}</b></span>
-                </div>"""
-
-                initial = c["name"][0] if c["name"] else "?"
-
-                with col:
-                    st.markdown(f"""
-                    <div class="person-card">
-                        <div style="display:flex;justify-content:space-between;align-items:flex-start">
-                            <div style="display:flex;align-items:center;gap:12px">
-                                <div style="background:#4c1d95;border-radius:50%;width:40px;height:40px;
-                                            display:flex;align-items:center;justify-content:center;
-                                            color:#ddd6fe;font-weight:700;font-size:1rem;flex-shrink:0">
-                                    {initial}
-                                </div>
-                                <div>
-                                    <div class="person-name">{rank_num}. {c['name']}</div>
-                                    <div class="person-dept">{c['dept']}</div>
-                                </div>
-                            </div>
-                            <div style="color:{pct_color};font-size:1.6rem;font-weight:800">{pct}%</div>
-                        </div>
-                        {stats_html}
-                        {chips_html}
-                    </div>
-                    """, unsafe_allow_html=True)
-
-        # ── Export ─────────────────────────────────────────
-        if cards:
-            st.divider()
-            if st.button("📥 Export สรุปรายบุคคล (.xlsx)", key="export_person"):
-                rows_exp = []
-                for c in cards:
-                    for ym, s in c["stats"].items():
-                        work = s["ok"]+s["late"]+s["absent"]+s["forgot"]
-                        rows_exp.append({
-                            "ชื่อ-สกุล": c["name"], "กลุ่มงาน": c["dept"],
-                            "เดือน": ym, "มาปกติ": s["ok"], "มาสาย": s["late"],
-                            "ขาดงาน": s["absent"], "ลืมสแกน": s["forgot"],
-                            "ลา": s["leave"], "ไปราชการ": s["travel"],
-                            "วันทำการรวม": work,
-                            "% มาปกติ": round(s["ok"]/work*100) if work>0 else 0,
-                        })
-                buf_p = io.BytesIO()
-                with pd.ExcelWriter(buf_p, engine="xlsxwriter") as w:
-                    pd.DataFrame(rows_exp).to_excel(w, index=False, sheet_name="สรุปรายบุคคล")
-                st.download_button("⬇️ ดาวน์โหลด", buf_p.getvalue(),
-                                   "PersonSummary.xlsx", mime=EXCEL_MIME)
+                        df_lm.groupby("ประเภทการลา")["จำนวนวันลา"].sum().reset_index().to_excel(
+                            writer, sheet_name="ลาแยกประเภท", index=False)
+                st.download_button("⬇️ ดาวน์โหลดรายงาน", output.getvalue(),
+                                   f"HR_Report_{export_month}.xlsx", mime=EXCEL_MIME,
+                                   use_container_width=True)
 
 # ============================================================
 # 📅 ตรวจสอบการปฏิบัติงาน
