@@ -394,37 +394,226 @@ def parse_time(val) -> Optional[dt.time]:
 # ===========================
 @st.cache_data(ttl=300)
 def read_attendance_report() -> pd.DataFrame:
+    """
+    อ่านไฟล์ attendance_report.xlsx อย่างละเอียด รองรับหลายรูปแบบ:
+
+    รูปแบบ A — แต่ละแถวคือ 1 การสแกน (ชื่อ | วันที่ | เวลาเข้า | เวลาออก)
+    รูปแบบ B — แต่ละแถวมีชื่อซ้ำหลายวัน (ชื่อ | วันที่ | เวลา | เวลา)
+    รูปแบบ C — ไฟล์เครื่องสแกน ZKTeco/Fingertec: No | ชื่อ | Department | Date | Time | ...
+    รูปแบบ D — ชื่อ column ภาษาอังกฤษ: Name/Employee | Date | Check In | Check Out
+    """
     fid = get_file_id(FILE_ATTEND)
-    if not fid: return pd.DataFrame()
+    if not fid:
+        logger.warning("read_attendance_report: ไม่พบไฟล์ %s ใน Drive", FILE_ATTEND)
+        return pd.DataFrame()
+
     try:
-        req = get_drive_service().files().get_media(fileId=fid, supportsAllDrives=True)
-        fh = io.BytesIO(); dl = MediaIoBaseDownload(fh, req); done=False
-        while not done: _,done=dl.next_chunk()
-        fh.seek(0); df_raw = pd.read_excel(fh, engine="openpyxl", header=0, dtype=str)
-    except Exception as e: logger.error(f"read_attendance_report: {e}"); return pd.DataFrame()
-    if df_raw.empty: return pd.DataFrame()
+        req  = get_drive_service().files().get_media(fileId=fid, supportsAllDrives=True)
+        fh   = io.BytesIO()
+        dl   = MediaIoBaseDownload(fh, req)
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+        fh.seek(0)
+        # อ่าน dtype=str ทั้งหมดเพื่อป้องกัน pandas auto-cast วันที่/เวลาผิด
+        df_raw = pd.read_excel(fh, engine="openpyxl", header=0, dtype=str)
+    except Exception as e:
+        logger.error("read_attendance_report: %s", e)
+        return pd.DataFrame()
+
+    if df_raw.empty:
+        logger.warning("read_attendance_report: ไฟล์ว่างเปล่า")
+        return pd.DataFrame()
+
+    # ── normalize column names ──────────────────────────────────────────
     df_raw.columns = [str(c).strip() for c in df_raw.columns]
-    COL_NAME_A=next((c for c in df_raw.columns if c in ("ชื่อพนักงาน","ชื่อ")),None)
-    COL_DATE=next((c for c in df_raw.columns if c in ("วันที่","date","Date")),None)
-    COL_IN=next((c for c in df_raw.columns if c in ("เวลาเข้า","เข้า","check_in")),None)
-    COL_OUT=next((c for c in df_raw.columns if c in ("เวลาออก","ออก","check_out")),None)
-    COL_NOTE=next((c for c in df_raw.columns if c in ("หมายเหตุ","note","Note")),None)
-    COL_NAME_H=next((c for c in df_raw.columns if c in ("ชื่อ-สกุล",)),None)
-    if COL_DATE is None: return pd.DataFrame()
-    rows_out=[]
-    for _,row in df_raw.iterrows():
-        name_a=_normalize_name(row.get(COL_NAME_A,"")) if COL_NAME_A else ""
-        name_h=_normalize_name(row.get(COL_NAME_H,"")) if COL_NAME_H else ""
-        name=name_a if name_a else name_h
-        if not name: continue
-        date_val=_normalize_date(row.get(COL_DATE,""))
-        if date_val is None: continue
-        rows_out.append({"ชื่อ-สกุล":name,"วันที่":pd.Timestamp(date_val),"เวลาเข้า":_normalize_time_value(row.get(COL_IN,"")) if COL_IN else "","เวลาออก":_normalize_time_value(row.get(COL_OUT,"")) if COL_OUT else "","หมายเหตุ":str(row.get(COL_NOTE,"") or "").strip()})
-    if not rows_out: return pd.DataFrame(columns=["ชื่อ-สกุล","วันที่","เวลาเข้า","เวลาออก","หมายเหตุ"])
+    raw_cols = df_raw.columns.tolist()
+    logger.info("read_attendance_report: columns = %s", raw_cols)
+
+    # ── fuzzy column matching ───────────────────────────────────────────
+    # ชื่อพนักงาน
+    NAME_CANDIDATES = [
+        "ชื่อ-สกุล","ชื่อพนักงาน","ชื่อ","Name","Employee Name",
+        "employee","name","fullname","FullName","EMPLOYEE","NAME",
+        "ชื่อ - สกุล","ชื่อ-นามสกุล",
+    ]
+    # วันที่
+    DATE_CANDIDATES = [
+        "วันที่","date","Date","DATE","วันที่เข้างาน","Check Date",
+        "checkdate","AttendDate","วัน/เดือน/ปี","Attendance Date",
+    ]
+    # เวลาเข้า
+    IN_CANDIDATES = [
+        "เวลาเข้า","เข้า","check_in","Check In","CheckIn","checkin",
+        "เวลาเข้างาน","Time In","time_in","IN","In","เข้างาน",
+        "First Check","First In","Scan In",
+    ]
+    # เวลาออก
+    OUT_CANDIDATES = [
+        "เวลาออก","ออก","check_out","Check Out","CheckOut","checkout",
+        "เวลาออกงาน","Time Out","time_out","OUT","Out","ออกงาน",
+        "Last Check","Last Out","Scan Out",
+    ]
+    # หมายเหตุ
+    NOTE_CANDIDATES = ["หมายเหตุ","note","Note","NOTE","Remark","remark","REMARK"]
+
+    def _find_col(candidates: list[str]) -> Optional[str]:
+        """ค้นหา column จาก candidates list (exact → lower → contains)"""
+        # exact match
+        for c in candidates:
+            if c in raw_cols:
+                return c
+        # case-insensitive
+        raw_lower = {col.lower(): col for col in raw_cols}
+        for c in candidates:
+            if c.lower() in raw_lower:
+                return raw_lower[c.lower()]
+        # contains match (สำหรับชื่อ column ยาว เช่น "เวลาเข้างาน (HH:MM)")
+        for c in candidates:
+            for col in raw_cols:
+                if c.lower() in col.lower():
+                    return col
+        return None
+
+    COL_NAME = _find_col(NAME_CANDIDATES)
+    COL_DATE = _find_col(DATE_CANDIDATES)
+    COL_IN   = _find_col(IN_CANDIDATES)
+    COL_OUT  = _find_col(OUT_CANDIDATES)
+    COL_NOTE = _find_col(NOTE_CANDIDATES)
+
+    logger.info(
+        "read_attendance_report: mapping — ชื่อ=%s วันที่=%s เข้า=%s ออก=%s หมายเหตุ=%s",
+        COL_NAME, COL_DATE, COL_IN, COL_OUT, COL_NOTE,
+    )
+
+    # ── ถ้าหา column หลักไม่เจอ ให้ลอง detect แบบ positional ──────────
+    # บางไฟล์เครื่องสแกนมี header แปลก เช่น แถวแรกไม่ใช่ header จริง
+    if COL_DATE is None or COL_NAME is None:
+        logger.warning("read_attendance_report: ไม่พบ column มาตรฐาน — ลอง multi-header scan")
+        # ลองอ่านซ้ำโดยข้าม 1-3 แถวแรก
+        for skip in range(1, 5):
+            try:
+                fh.seek(0)
+                df_try = pd.read_excel(fh, engine="openpyxl", header=skip, dtype=str)
+                df_try.columns = [str(c).strip() for c in df_try.columns]
+                if _find_col(DATE_CANDIDATES) or _find_col(NAME_CANDIDATES):
+                    df_raw  = df_try
+                    raw_cols = df_raw.columns.tolist()
+                    COL_NAME = _find_col(NAME_CANDIDATES)
+                    COL_DATE = _find_col(DATE_CANDIDATES)
+                    COL_IN   = _find_col(IN_CANDIDATES)
+                    COL_OUT  = _find_col(OUT_CANDIDATES)
+                    COL_NOTE = _find_col(NOTE_CANDIDATES)
+                    logger.info("read_attendance_report: ใช้ header row=%d → %s", skip, raw_cols[:6])
+                    break
+            except Exception:
+                continue
+
+    if COL_DATE is None:
+        logger.error(
+            "read_attendance_report: ไม่พบ column วันที่เลย (columns=%s)", raw_cols
+        )
+        return pd.DataFrame()
+
+    # ── กรณีไม่มี column ชื่อ — ลองดู column แรกหรือ column ที่มีชื่อบุคคล ──
+    if COL_NAME is None:
+        # ลองหา column ที่ค่าเริ่มต้นด้วยคำนำหน้าชื่อ
+        prefix_re = re.compile(r"^(นาย|นาง(?:สาว)?|Mr|Mrs|Ms|Miss)", re.IGNORECASE)
+        for col in raw_cols:
+            sample = df_raw[col].dropna().astype(str).head(20)
+            if sample.str.match(prefix_re).sum() >= 3:
+                COL_NAME = col
+                logger.info("read_attendance_report: detect ชื่อจาก value pattern → '%s'", col)
+                break
+        if COL_NAME is None and raw_cols:
+            COL_NAME = raw_cols[0]  # fallback: column แรก
+            logger.warning("read_attendance_report: ใช้ column แรก '%s' เป็นชื่อ", COL_NAME)
+
+    # ── build output rows ────────────────────────────────────────────────
+    rows_out = []
+    skipped  = 0
+
+    for idx, row in df_raw.iterrows():
+        # ชื่อ
+        name = _normalize_name(row.get(COL_NAME, "")) if COL_NAME else ""
+        if not name:
+            skipped += 1
+            continue
+
+        # วันที่ — ลอง _normalize_date ก่อน แล้ว fallback _parse_date_flex
+        raw_date = row.get(COL_DATE, "")
+        date_val = _normalize_date(raw_date)
+        if date_val is None:
+            ts = _parse_date_flex(raw_date)
+            date_val = ts.date() if ts is not None and not pd.isna(ts) else None
+        if date_val is None:
+            skipped += 1
+            continue
+
+        # เวลา
+        time_in  = _normalize_time_value(row.get(COL_IN,  "")) if COL_IN  else ""
+        time_out = _normalize_time_value(row.get(COL_OUT, "")) if COL_OUT else ""
+
+        # กรณีเวลาเข้า=ออก เหมือนกัน (เครื่องสแกนบางรุ่น record ครั้งเดียว)
+        # ไม่ต้องแก้ไขที่นี่ — logic ใน _att_status จะจัดการเอง
+
+        note = str(row.get(COL_NOTE, "") or "").strip() if COL_NOTE else ""
+
+        rows_out.append({
+            "ชื่อ-สกุล": name,
+            "วันที่":     pd.Timestamp(date_val),
+            "เวลาเข้า":   time_in,
+            "เวลาออก":    time_out,
+            "หมายเหตุ":   note,
+        })
+
+    logger.info(
+        "read_attendance_report: อ่านได้ %d แถว, ข้าม %d แถว (ชื่อ/วันที่ว่าง)",
+        len(rows_out), skipped,
+    )
+
+    if not rows_out:
+        return pd.DataFrame(columns=["ชื่อ-สกุล","วันที่","เวลาเข้า","เวลาออก","หมายเหตุ","เดือน"])
+
     df_out = pd.DataFrame(rows_out)
-    df_out["วันที่"]=pd.to_datetime(df_out["วันที่"],errors="coerce").dt.normalize()
-    df_out["เดือน"]=df_out["วันที่"].dt.strftime("%Y-%m")
-    df_out=df_out.dropna(subset=["วันที่"]); df_out=df_out[df_out["ชื่อ-สกุล"]!=""].reset_index(drop=True)
+    df_out["วันที่"] = pd.to_datetime(df_out["วันที่"], errors="coerce").dt.normalize()
+    df_out["เดือน"]  = df_out["วันที่"].dt.strftime("%Y-%m")
+    df_out = df_out.dropna(subset=["วันที่"])
+    df_out = df_out[df_out["ชื่อ-สกุล"] != ""].reset_index(drop=True)
+
+    # ── dedup: ถ้า 1 คน 1 วัน มีหลายแถว ให้เอาเวลาเข้าแรกสุด + ออกหลังสุด ──
+    # (เครื่องบางรุ่น record ทุกครั้งที่แตะ)
+    df_out["_time_in_dt"]  = df_out["เวลาเข้า"].apply(parse_time)
+    df_out["_time_out_dt"] = df_out["เวลาออก"].apply(parse_time)
+
+    def _agg_scans(grp: pd.DataFrame) -> pd.Series:
+        times_in  = grp["_time_in_dt"].dropna().tolist()
+        times_out = grp["_time_out_dt"].dropna().tolist()
+        t_in_str  = min(times_in).strftime("%H:%M")  if times_in  else ""
+        t_out_str = max(times_out).strftime("%H:%M") if times_out else ""
+        note_combined = " | ".join(filter(None, grp["หมายเหตุ"].unique().tolist()))
+        return pd.Series({
+            "เวลาเข้า": t_in_str,
+            "เวลาออก":  t_out_str,
+            "หมายเหตุ": note_combined,
+            "เดือน":    grp["เดือน"].iloc[0],
+        })
+
+    n_before = len(df_out)
+    df_out = (
+        df_out
+        .groupby(["ชื่อ-สกุล", "วันที่"], as_index=False)
+        .apply(_agg_scans)
+        .reset_index(drop=True)
+    )
+    n_after = len(df_out)
+    if n_before != n_after:
+        logger.info(
+            "read_attendance_report: รวม multi-scan %d → %d แถว (dedup)",
+            n_before, n_after,
+        )
+
+    df_out = df_out.sort_values(["ชื่อ-สกุล","วันที่"]).reset_index(drop=True)
     return df_out
 
 # ===========================
@@ -1185,8 +1374,67 @@ elif menu == "⚙️ ผู้ดูแลระบบ":
         admin_file_panel(df_leave,FILE_LEAVE,tab1); admin_file_panel(df_travel,FILE_TRAVEL,tab2)
         admin_file_panel(read_attendance_report(),FILE_ATTEND,tab3); admin_file_panel(df_staff,FILE_STAFF,tab4)
         with tab5:
-            st.subheader("🔧 ตั้งค่าระบบ")
+            st.subheader("🔧 ตั้งค่าและ Debug")
             st.info(f"FOLDER_ID: `{FOLDER_ID}`\nFILE_ATTEND: `{FILE_ATTEND}`")
+
+            st.divider()
+            st.subheader("🔍 Debug ไฟล์สแกนนิ้ว (attendance_report.xlsx)")
+            st.caption("ใช้เพื่อตรวจสอบว่าโค้ดอ่านไฟล์ถูกต้องหรือไม่")
+
+            if st.button("🔬 วิเคราะห์ไฟล์สแกนนิ้ว", key="btn_debug_att"):
+                fid_att = get_file_id(FILE_ATTEND)
+                if not fid_att:
+                    st.error("❌ ไม่พบไฟล์ attendance_report.xlsx ใน Drive")
+                else:
+                    try:
+                        req = get_drive_service().files().get_media(fileId=fid_att, supportsAllDrives=True)
+                        fh2 = io.BytesIO()
+                        dl2 = MediaIoBaseDownload(fh2, req)
+                        done2 = False
+                        while not done2: _, done2 = dl2.next_chunk()
+                        fh2.seek(0)
+                        df_debug = pd.read_excel(fh2, engine="openpyxl", header=0, dtype=str)
+                        df_debug.columns = [str(c).strip() for c in df_debug.columns]
+
+                        st.success(f"✅ อ่านไฟล์ได้: {len(df_debug)} แถว, {len(df_debug.columns)} คอลัมน์")
+
+                        st.markdown("**📋 Column names ที่พบ:**")
+                        cols_df = pd.DataFrame({"ลำดับ": range(1, len(df_debug.columns)+1), "ชื่อ Column": df_debug.columns.tolist()})
+                        st.dataframe(cols_df, use_container_width=True, height=200)
+
+                        st.markdown("**👀 ตัวอย่างข้อมูล 10 แถวแรก (raw):**")
+                        st.dataframe(df_debug.head(10), use_container_width=True)
+
+                        st.markdown("**🔄 ผลหลังผ่าน read_attendance_report():**")
+                        st.cache_data.clear()
+                        df_parsed = read_attendance_report()
+                        if df_parsed.empty:
+                            st.error("❌ read_attendance_report() คืนค่าว่าง — column ไม่ตรงหรือข้อมูลผิดรูปแบบ")
+                            st.markdown("**💡 วิธีแก้:** ตรวจสอบว่าไฟล์มี column ต่อไปนี้อย่างน้อย 1 ชื่อ:")
+                            st.code("""
+ชื่อพนักงาน / ชื่อ-สกุล / ชื่อ / Name / Employee Name
+วันที่ / Date / Check Date / Attendance Date
+เวลาเข้า / เข้า / Check In / Time In / First Check
+เวลาออก / ออก / Check Out / Time Out / Last Check
+                            """)
+                        else:
+                            st.success(f"✅ parse สำเร็จ: {len(df_parsed)} แถว")
+                            st.dataframe(df_parsed.head(10), use_container_width=True)
+
+                            # สรุปสถิติ
+                            n_no_in  = len(df_parsed[df_parsed["เวลาเข้า"]==""])
+                            n_no_out = len(df_parsed[df_parsed["เวลาออก"]==""])
+                            n_both   = len(df_parsed[(df_parsed["เวลาเข้า"]!="")&(df_parsed["เวลาออก"]!="")])
+                            st.markdown(f"""
+**📊 สรุปคุณภาพข้อมูล:**
+- มีทั้งเข้า+ออก: `{n_both}` แถว
+- ไม่มีเวลาเข้า: `{n_no_in}` แถว
+- ไม่มีเวลาออก: `{n_no_out}` แถว
+- บุคลากรที่พบ: `{df_parsed["ชื่อ-สกุล"].nunique()}` คน
+- ช่วงวันที่: `{df_parsed["วันที่"].min().strftime("%Y-%m-%d")}` ถึง `{df_parsed["วันที่"].max().strftime("%Y-%m-%d")}`
+                            """)
+                    except Exception as e:
+                        st.error(f"❌ เกิดข้อผิดพลาด: {e}")
         with tab6:
             st.subheader("👆 บันทึกเวลาทำการสำหรับผู้ที่ลืมสแกนนิ้ว")
             df_manual_tab=_dc("cache_manual"); _manual_fid=get_file_id(FILE_MANUAL_SCAN)
