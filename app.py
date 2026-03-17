@@ -940,10 +940,8 @@ def write_excel_to_drive(filename: str, df: pd.DataFrame,
 
 def backup_excel(filename: str, df: pd.DataFrame) -> None:
     """
-    สำรองไฟล์ก่อนแก้ไข โครงสร้าง:
-      📁 Backup/
-        └── 📁 BAK_{filename}/
-              └── BAK_{filename}.xlsx  ← overwrite ทุกครั้ง (1 ไฟล์คงที่)
+    สำรองไฟล์ก่อนแก้ไข — ใช้ _drive_execute เพื่อป้องกัน crash
+    📁 Backup/BAK_{filename}/BAK_{filename}.xlsx  (overwrite ทุกครั้ง)
     """
     if df.empty:
         return
@@ -952,35 +950,33 @@ def backup_excel(filename: str, df: pd.DataFrame) -> None:
         if not fid:
             return
 
-        bak_name     = f"BAK_{filename}"
+        bak_name = f"BAK_{filename}"
+        svc = _get_service()
 
-        # 1. หรือสร้าง Backup/ folder
-        backup_root  = get_or_create_folder(BACKUP_FOLDER_NAME, FOLDER_ID)
+        backup_root = get_or_create_folder(BACKUP_FOLDER_NAME, FOLDER_ID)
         if not backup_root:
-            logger.warning("backup_excel: ไม่สามารถสร้าง Backup/ folder ได้")
             return
 
-        # 2. หรือสร้าง Backup/BAK_{filename}/ subfolder
         bak_subfolder = get_or_create_folder(bak_name, backup_root)
         if not bak_subfolder:
-            logger.warning(f"backup_excel: ไม่สามารถสร้าง {bak_name}/ subfolder ได้")
             return
 
-        # 3. ลบ BAK เดิมใน subfolder (ถ้ามี) แล้ว copy ใหม่ทับ
         existing_bak_id = get_file_id(bak_name, bak_subfolder)
         if existing_bak_id:
             try:
-                _get_service().files().delete(
-                    fileId=existing_bak_id, supportsAllDrives=True
-                ).execute()
+                _drive_execute(
+                    svc.files().delete(fileId=existing_bak_id, supportsAllDrives=True)
+                )
             except Exception:
                 pass
 
-        _get_service().files().copy(
-            fileId=fid,
-            body={"name": bak_name, "parents": [bak_subfolder]},
-            supportsAllDrives=True,
-        ).execute()
+        _drive_execute(
+            svc.files().copy(
+                fileId=fid,
+                body={"name": bak_name, "parents": [bak_subfolder]},
+                supportsAllDrives=True,
+            )
+        )
         logger.info(f"Backup saved: {BACKUP_FOLDER_NAME}/{bak_name}/{bak_name}")
 
     except Exception as e:
@@ -2727,13 +2723,11 @@ elif menu == "🧭 บันทึกไปราชการ":
     st.markdown('<div class="section-header">🧭 บันทึกการเดินทางไปราชการ</div>', unsafe_allow_html=True)
 
     with st.spinner("กำลังโหลดข้อมูล..."):
-        # ── อ่านพร้อม file_id เพื่อใช้ update in-place ────────────
         df_travel, _travel_fid = read_excel_with_backup(FILE_TRAVEL, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","เรื่อง/กิจกรรม"])
         df_leave  = read_excel_with_backup(FILE_LEAVE, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])[0]
-        df_att    = read_attendance_report()
         df_staff  = read_excel_from_drive(FILE_STAFF)
-        df_leave, df_travel, df_att = preprocess_dataframes(df_leave, df_travel, df_att)
-        ALL_NAMES = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, df_att)
+        df_leave, df_travel, _ = preprocess_dataframes(df_leave, df_travel, pd.DataFrame())
+        ALL_NAMES = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, pd.DataFrame())
 
     st.info(f"📂 ข้อมูลไปราชการปัจจุบัน: **{len(df_travel)} รายการ**  "
             f"{'(file ID: ' + _travel_fid[:8] + '...)' if _travel_fid else '⚠️ ยังไม่มีไฟล์ใน Drive'}")
@@ -2767,6 +2761,7 @@ elif menu == "🧭 บันทึกไปราชการ":
                 for e in errors:
                     st.error(e)
             else:
+                _rerun_after = False
                 with st.status("กำลังบันทึก...", expanded=True) as status:
                     try:
                         link = "-"
@@ -2790,24 +2785,24 @@ elif menu == "🧭 บันทึกไปราชการ":
                         backup_excel(FILE_TRAVEL, df_travel)
                         df_upd = pd.concat([df_travel, pd.DataFrame(new_rows)], ignore_index=True)
 
-                        # ส่ง known_file_id เพื่อให้ update ไฟล์เดิม ไม่สร้างใหม่
                         if write_excel_to_drive(FILE_TRAVEL, df_upd, known_file_id=_travel_fid):
-                            # [N2] LINE Notify
                             st.write("🔔 ส่งแจ้งเตือน LINE...")
-                            msg = format_travel_notify(final_staff, project, location, d_start, d_end, days)
+                            msg  = format_travel_notify(final_staff, project, location, d_start, d_end, days)
                             sent = send_line_notify(msg)
-                            # [N3] Log
                             log_activity("ไปราชการ", f"{project} @ {location}", ", ".join(final_staff[:3]))
-
                             status.update(label=f"✅ บันทึกสำเร็จ ({len(final_staff)} ท่าน) {'| LINE ✓' if sent else ''}", state="complete")
                             st.toast(f"✅ บันทึกไปราชการสำเร็จ {len(final_staff)} ท่าน", icon="✅")
-                            time.sleep(1)
-                            st.rerun()
+                            _rerun_after = True
                         else:
                             status.update(label="❌ บันทึกล้มเหลว", state="error")
                     except Exception as e:
                         logger.error(f"travel form: {e}")
                         status.update(label=f"❌ {e}", state="error")
+
+                # st.rerun() ต้องอยู่นอก with st.status — ป้องกัน segfault
+                if _rerun_after:
+                    time.sleep(1)
+                    st.rerun()
 
     st.divider()
     st.subheader("📋 รายการล่าสุด")
@@ -2862,6 +2857,7 @@ elif menu == "🕒 บันทึกการลา":
                 if quota_msg:  # warning level
                     st.warning(quota_msg)
 
+                _rerun_leave = False
                 with st.status("กำลังบันทึก...", expanded=True) as status:
                     try:
                         link = "-"
@@ -2883,21 +2879,21 @@ elif menu == "🕒 บันทึกการลา":
                         df_upd = pd.concat([df_leave, pd.DataFrame([new_rec])], ignore_index=True)
 
                         if write_excel_to_drive(FILE_LEAVE, df_upd, known_file_id=_leave_fid):
-                            # [N1] LINE Notify
                             st.write("🔔 ส่งแจ้งเตือน LINE...")
                             sent = send_line_notify(format_leave_notify(new_rec))
-                            # [N3] Log
                             log_activity("การลา", f"{l_type} {days_req} วัน — {l_reason[:30]}", l_name)
-
                             status.update(label=f"✅ บันทึกสำเร็จ {'| LINE ✓' if sent else ''}", state="complete")
                             st.toast(f"✅ บันทึกการลาสำเร็จ ({l_type} {days_req} วัน)", icon="✅")
-                            time.sleep(1)
-                            st.rerun()
+                            _rerun_leave = True
                         else:
                             status.update(label="❌ บันทึกล้มเหลว", state="error")
                     except Exception as e:
                         logger.error(f"leave form: {e}")
                         status.update(label=f"❌ {e}", state="error")
+
+                if _rerun_leave:
+                    time.sleep(1)
+                    st.rerun()
 
     st.divider()
     st.subheader("📋 รายการล่าสุด")
@@ -3186,8 +3182,7 @@ elif menu == "⚙️ ผู้ดูแลระบบ":
                             known_fid = _fid_map.get(filename)
                             if write_excel_to_drive(filename, new_df, known_file_id=known_fid):
                                 st.toast("✅ อัปเดตสำเร็จ", icon="✅")
-                                time.sleep(1)
-                                st.rerun()
+                                st.cache_data.clear()
                     except Exception as e:
                         st.error(f"❌ อ่านไฟล์ไม่ได้: {e}")
 
@@ -3451,8 +3446,7 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
                                         f"วันที่ {ms_date.strftime('%d/%m/%Y')} สำเร็จ",
                                         icon="✅",
                                     )
-                                    time.sleep(1)
-                                    st.rerun()
+                                    st.cache_data.clear()
                                 else:
                                     status.update(label="❌ บันทึกล้มเหลว", state="error")
                             except Exception as e:
@@ -3536,8 +3530,7 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
                                 if write_excel_to_drive(FILE_MANUAL_SCAN, df_manual_new, known_file_id=_manual_fid):
                                     log_activity("ลบสแกนนิ้ว", del_ms_label, search_ms_name)
                                     st.toast("✅ ลบรายการสำเร็จ", icon="🗑️")
-                                    time.sleep(1)
-                                    st.rerun()
+                                    st.cache_data.clear()
 
         # ============================================================
         # 🎌 Tab: วันหยุดพิเศษ
