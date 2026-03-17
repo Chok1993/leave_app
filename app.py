@@ -1452,9 +1452,9 @@ elif menu == "📊 Dashboard & รายงาน":
     c3.metric("👆 ข้อมูลสแกนนิ้ว", len(df_att))
 
     st.divider()
-    tab_a, tab_b, tab_c, tab_late, tab_d = st.tabs([
+    tab_a, tab_b, tab_c, tab_late, tab_d, tab_person = st.tabs([
         "🏆 Top Charts", "📈 แนวโน้มรายเดือน",
-        "🏢 แยกกลุ่มงาน", "⏰ สถิติการมาสาย", "📥 Export รายงาน",
+        "🏢 แยกกลุ่มงาน", "⏰ สถิติการมาสาย", "📥 Export รายงาน", "👤 สรุปรายบุคคล",
     ])
 
     with tab_a:
@@ -1759,6 +1759,349 @@ elif menu == "📊 Dashboard & รายงาน":
                     mime=EXCEL_MIME,
                     use_container_width=True,
                 )
+
+    # ─────────────────────────────────────────────
+    # 👤 Tab: สรุปรายบุคคล
+    # ─────────────────────────────────────────────
+    with tab_person:
+        st.markdown("""
+        <style>
+        .person-card {
+            background: linear-gradient(135deg,#1e1b4b 0%,#1e293b 100%);
+            border-radius:16px; padding:20px; margin-bottom:16px;
+            border:1px solid #334155; color:#f1f5f9;
+        }
+        .person-name { font-size:1.1rem; font-weight:700; color:#e2e8f0; }
+        .person-dept { font-size:0.75rem; color:#94a3b8; margin-top:2px; }
+        .person-pct  { font-size:1.5rem; font-weight:800; }
+        .month-chip  {
+            background:#1e293b; border-radius:10px; padding:10px 12px;
+            text-align:center; border:1px solid #334155; font-size:0.75rem;
+        }
+        .month-label { color:#94a3b8; font-size:0.7rem; margin-bottom:4px; }
+        .pct-high    { color:#22c55e; font-size:1.1rem; font-weight:700; }
+        .pct-mid     { color:#f59e0b; font-size:1.1rem; font-weight:700; }
+        .pct-low     { color:#ef4444; font-size:1.1rem; font-weight:700; }
+        .stat-dot    { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; }
+        .dot-ok      { background:#22c55e; }
+        .dot-late    { background:#f59e0b; }
+        .dot-absent  { background:#ef4444; }
+        .dot-forgot  { background:#8b5cf6; }
+        .dot-leave   { background:#ec4899; }
+        </style>
+        """, unsafe_allow_html=True)
+
+        st.subheader("👤 สรุปการเข้างานรายบุคคล")
+
+        if df_att.empty:
+            st.info("ยังไม่มีข้อมูลสแกนนิ้วในระบบ")
+            st.stop()
+
+        # ── Load travel + leave สำหรับ merge ──────────────────
+        with st.spinner("กำลังประมวลผลข้อมูลรายบุคคล..."):
+            df_staff_p  = read_excel_from_drive(FILE_STAFF)
+            df_leave_p  = read_excel_from_drive(FILE_LEAVE)
+            df_travel_p = load_all_travel()
+            df_leave_p, df_travel_pp2, _ = preprocess_dataframes(df_leave_p, df_travel_p, pd.DataFrame())
+
+        # ── Filters ──────────────────────────────────────────
+        pf1, pf2, pf3, pf4 = st.columns([1, 2, 2, 2])
+        with pf1:
+            all_years_att = sorted(
+                df_att["วันที่"].dropna()
+                .pipe(lambda s: pd.to_datetime(s, errors="coerce"))
+                .dt.year.dropna().astype(int).unique().tolist(), reverse=True
+            )
+            sel_p_year = st.selectbox("ปีงบประมาณ", ["ทั้งหมด"] + [str(y) for y in all_years_att], key="p_year")
+        with pf2:
+            grp_opts = ["ทั้งหมด"] + STAFF_GROUPS
+            sel_p_grp = st.selectbox("กลุ่มงาน", grp_opts, key="p_grp")
+        with pf3:
+            all_months_att = sorted(
+                df_att["เดือน"].dropna().unique().tolist()
+            ) if "เดือน" in df_att.columns else []
+            sel_p_month = st.selectbox("ช่วงเดือน", ["ทั้งหมด"] + all_months_att, key="p_month")
+        with pf4:
+            search_name = st.text_input("🔍 ค้นหาชื่อ", placeholder="พิมพ์ชื่อ...", key="p_search")
+
+        # Sort
+        sort_opts = {"Sort Normal": "ชื่อ", "Sort % มากสุด": "pct_desc", "Sort % น้อยสุด": "pct_asc"}
+        sort_key = st.radio("เรียงลำดับ", list(sort_opts.keys()), horizontal=True, key="p_sort")
+
+        # ── Filter attendance data ──────────────────────────
+        df_att_p = df_att.copy()
+        df_att_p["วันที่"] = pd.to_datetime(df_att_p["วันที่"], errors="coerce")
+
+        if sel_p_year != "ทั้งหมด":
+            df_att_p = df_att_p[df_att_p["วันที่"].dt.year == int(sel_p_year)]
+        if sel_p_month != "ทั้งหมด" and "เดือน" in df_att_p.columns:
+            df_att_p = df_att_p[df_att_p["เดือน"] == sel_p_month]
+
+        # รายชื่อจาก staff master หรือ fallback จากข้อมูลสแกน
+        if not df_staff_p.empty and "ชื่อ-สกุล" in df_staff_p.columns:
+            all_people = sorted(df_staff_p["ชื่อ-สกุล"].dropna().astype(str).str.strip().unique().tolist())
+        else:
+            all_people = sorted(df_att_p["ชื่อ-สกุล"].dropna().astype(str).unique().tolist())
+
+        # กรองกลุ่มงาน
+        if sel_p_grp != "ทั้งหมด" and not df_staff_p.empty and "กลุ่มงาน" in df_staff_p.columns:
+            grp_names = set(
+                df_staff_p[df_staff_p["กลุ่มงาน"] == sel_p_grp]["ชื่อ-สกุล"]
+                .astype(str).str.strip().tolist()
+            )
+            all_people = [n for n in all_people if n in grp_names]
+
+        # กรองค้นหา
+        if search_name.strip():
+            all_people = [n for n in all_people if search_name.strip().lower() in n.lower()]
+
+        if not all_people:
+            st.warning("ไม่พบบุคลากรที่ตรงกับเงื่อนไข")
+            st.stop()
+
+        # ── Pre-build travel index ──────────────────────────
+        travel_idx_p: Dict[str, List[tuple]] = {}
+        if not df_travel_pp2.empty and "ชื่อ-สกุล" in df_travel_pp2.columns:
+            for _, tr in df_travel_pp2.iterrows():
+                try:
+                    s = pd.to_datetime(tr["วันที่เริ่ม"]).date()
+                    e = pd.to_datetime(tr["วันที่สิ้นสุด"]).date()
+                    nm = str(tr["ชื่อ-สกุล"]).strip()
+                    travel_idx_p.setdefault(nm, []).append((s, e))
+                    # ผู้ร่วมเดินทาง
+                    import re as _re2
+                    raw = str(tr.get("ผู้ร่วมเดินทาง","")).strip()
+                    if raw and raw not in ("-","nan",""):
+                        raw = _re2.sub(r"\d+\.\s*","", raw)
+                        for comp in raw.replace("\n",",").split(","):
+                            comp = comp.strip()
+                            if comp and len(comp)>=3:
+                                travel_idx_p.setdefault(comp, []).append((s, e))
+                except Exception:
+                    pass
+
+        leave_idx_p: Dict[str, List[tuple]] = {}
+        if not df_leave_p.empty and "ชื่อ-สกุล" in df_leave_p.columns:
+            for _, lv in df_leave_p.iterrows():
+                try:
+                    s = pd.to_datetime(lv["วันที่เริ่ม"]).date()
+                    e = pd.to_datetime(lv["วันที่สิ้นสุด"]).date()
+                    nm = str(lv["ชื่อ-สกุล"]).strip()
+                    leave_idx_p.setdefault(nm, []).append((s, e))
+                except Exception:
+                    pass
+
+        LATE_CUT_P = dt.time(8, 31)
+
+        # ── คำนวณสถิติรายบุคคล ─────────────────────────────
+        def calc_person_stats(name: str) -> dict:
+            df_per = df_att_p[df_att_p["ชื่อ-สกุล"] == name].copy()
+            if df_per.empty:
+                return {}
+
+            stats: Dict[str, dict] = {}   # month → {ok, late, absent, forgot, leave, travel, total}
+            for _, row in df_per.iterrows():
+                d = row["วันที่"]
+                if pd.isna(d): continue
+                d_date  = d.date()
+                d_month = d.strftime("%Y-%m")
+                month_th = f"{['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'][d.month-1]} {d.year+543-2500}"
+
+                if d.weekday() >= 5: continue  # ข้ามวันหยุด
+
+                # ตรวจลา
+                in_leave = any(ls <= d_date <= le for ls, le in leave_idx_p.get(name, []))
+                # ตรวจไปราชการ
+                in_travel = any(ts <= d_date <= te for ts, te in travel_idx_p.get(name, []))
+
+                if d_month not in stats:
+                    stats[d_month] = {"label": month_th, "ok":0,"late":0,"absent":0,"forgot":0,"leave":0,"travel":0,"total":0}
+
+                stats[d_month]["total"] += 1
+
+                if in_leave:
+                    stats[d_month]["leave"] += 1
+                    continue
+                if in_travel:
+                    stats[d_month]["travel"] += 1
+                    continue
+
+                t_in  = parse_time(row.get("เวลาเข้า",""))
+                t_out = parse_time(row.get("เวลาออก", ""))
+
+                if not t_in and not t_out:
+                    stats[d_month]["absent"] += 1
+                elif (t_in and not t_out) or (not t_in and t_out) or (t_in == t_out):
+                    stats[d_month]["forgot"] += 1
+                elif t_in >= LATE_CUT_P:
+                    stats[d_month]["late"]   += 1
+                else:
+                    stats[d_month]["ok"]     += 1
+
+            return stats
+
+        # ── Build cards data ────────────────────────────────
+        cards = []
+        for name in all_people:
+            dept = ""
+            if not df_staff_p.empty and "กลุ่มงาน" in df_staff_p.columns:
+                row_s = df_staff_p[df_staff_p["ชื่อ-สกุล"] == name]
+                if not row_s.empty:
+                    dept = str(row_s.iloc[0].get("กลุ่มงาน",""))
+
+            stats = calc_person_stats(name)
+            if not stats:
+                continue
+
+            total_ok     = sum(v["ok"]     for v in stats.values())
+            total_work   = sum(v["ok"]+v["late"]+v["absent"]+v["forgot"] for v in stats.values())
+            overall_pct  = round(total_ok / total_work * 100) if total_work > 0 else 0
+
+            cards.append({
+                "name": name, "dept": dept,
+                "stats": stats, "pct": overall_pct,
+                "ok": total_ok,
+                "late": sum(v["late"]   for v in stats.values()),
+                "absent": sum(v["absent"] for v in stats.values()),
+                "forgot": sum(v["forgot"] for v in stats.values()),
+                "leave": sum(v["leave"]  for v in stats.values()),
+            })
+
+        # Sort
+        if sort_opts[sort_key] == "pct_desc":
+            cards.sort(key=lambda x: -x["pct"])
+        elif sort_opts[sort_key] == "pct_asc":
+            cards.sort(key=lambda x: x["pct"])
+        else:
+            cards.sort(key=lambda x: x["name"])
+
+        # ── Overall summary bar ─────────────────────────────
+        if cards:
+            total_days_all = sum(c["ok"]+c["late"]+c["absent"]+c["forgot"] for c in cards)
+            pct_ok_all   = round(sum(c["ok"]     for c in cards)/total_days_all*100) if total_days_all else 0
+            pct_late_all = round(sum(c["late"]   for c in cards)/total_days_all*100) if total_days_all else 0
+            pct_abs_all  = round(sum(c["absent"] for c in cards)/total_days_all*100) if total_days_all else 0
+            pct_lv_all   = round(sum(c["leave"]  for c in cards)/total_days_all*100) if total_days_all else 0
+
+            st.markdown(f"""
+            <div style="background:#1e293b;border-radius:12px;padding:16px 24px;margin-bottom:16px;
+                        display:flex;gap:32px;align-items:center;flex-wrap:wrap;border:1px solid #334155;">
+                <div style="text-align:center">
+                    <div style="color:#22c55e;font-size:1.6rem;font-weight:800">{pct_ok_all}%</div>
+                    <div style="color:#94a3b8;font-size:0.72rem">มาปกติ</div>
+                </div>
+                <div style="text-align:center">
+                    <div style="color:#f59e0b;font-size:1.6rem;font-weight:800">{pct_late_all}%</div>
+                    <div style="color:#94a3b8;font-size:0.72rem">มาสาย</div>
+                </div>
+                <div style="text-align:center">
+                    <div style="color:#ef4444;font-size:1.6rem;font-weight:800">{pct_abs_all}%</div>
+                    <div style="color:#94a3b8;font-size:0.72rem">ขาดงาน</div>
+                </div>
+                <div style="text-align:center">
+                    <div style="color:#ec4899;font-size:1.6rem;font-weight:800">{pct_lv_all}%</div>
+                    <div style="color:#94a3b8;font-size:0.72rem">ลา</div>
+                </div>
+                <div style="text-align:center">
+                    <div style="color:#e2e8f0;font-size:1.6rem;font-weight:800">{len(cards)}</div>
+                    <div style="color:#94a3b8;font-size:0.72rem">จำนวนคน</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # ── Render Cards (2 columns) ────────────────────────
+        st.caption(f"แสดง {len(cards)} คน")
+        MONTH_TH = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."]
+
+        for i in range(0, len(cards), 2):
+            col_l, col_r = st.columns(2)
+            for col_idx, col in enumerate([col_l, col_r]):
+                card_i = i + col_idx
+                if card_i >= len(cards):
+                    break
+                c = cards[card_i]
+                pct  = c["pct"]
+                pct_color = "#22c55e" if pct >= 80 else ("#f59e0b" if pct >= 60 else "#ef4444")
+                rank_num = card_i + 1
+
+                # Months sorted
+                sorted_months = sorted(c["stats"].items())
+
+                # Build month chips HTML
+                chips_html = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;">'
+                for ym, s in sorted_months:
+                    work = s["ok"] + s["late"] + s["absent"] + s["forgot"]
+                    m_pct = round(s["ok"]/work*100) if work > 0 else 0
+                    m_color = "#22c55e" if m_pct >= 80 else ("#f59e0b" if m_pct >= 60 else "#ef4444")
+                    chips_html += f"""
+                    <div style="background:#0f172a;border-radius:8px;padding:8px 10px;
+                                text-align:center;border:1px solid #1e293b;min-width:72px;">
+                        <div style="color:#64748b;font-size:0.65rem">{s['label']}</div>
+                        <div style="color:{m_color};font-size:1rem;font-weight:700">{m_pct}%</div>
+                        <div style="color:#475569;font-size:0.65rem">{work} วัน</div>
+                        <div style="margin-top:4px;font-size:0.65rem;line-height:1.6">
+                            <span style="color:#22c55e">●</span> {s['ok']}
+                            <span style="color:#f59e0b;margin-left:4px">●</span> {s['late']}
+                            <span style="color:#ef4444;margin-left:4px">●</span> {s['absent']}
+                        </div>
+                    </div>"""
+                chips_html += "</div>"
+
+                # Stats summary
+                stats_html = f"""
+                <div style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap;font-size:0.75rem;">
+                    <span><span style="color:#22c55e">●</span> ปกติ <b>{c['ok']}</b></span>
+                    <span><span style="color:#f59e0b">●</span> สาย <b>{c['late']}</b></span>
+                    <span><span style="color:#ef4444">●</span> ขาด <b>{c['absent']}</b></span>
+                    <span><span style="color:#8b5cf6">●</span> ลืมสแกน <b>{c['forgot']}</b></span>
+                    <span><span style="color:#ec4899">●</span> ลา <b>{c['leave']}</b></span>
+                </div>"""
+
+                initial = c["name"][0] if c["name"] else "?"
+
+                with col:
+                    st.markdown(f"""
+                    <div class="person-card">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                            <div style="display:flex;align-items:center;gap:12px">
+                                <div style="background:#4c1d95;border-radius:50%;width:40px;height:40px;
+                                            display:flex;align-items:center;justify-content:center;
+                                            color:#ddd6fe;font-weight:700;font-size:1rem;flex-shrink:0">
+                                    {initial}
+                                </div>
+                                <div>
+                                    <div class="person-name">{rank_num}. {c['name']}</div>
+                                    <div class="person-dept">{c['dept']}</div>
+                                </div>
+                            </div>
+                            <div style="color:{pct_color};font-size:1.6rem;font-weight:800">{pct}%</div>
+                        </div>
+                        {stats_html}
+                        {chips_html}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+        # ── Export ─────────────────────────────────────────
+        if cards:
+            st.divider()
+            if st.button("📥 Export สรุปรายบุคคล (.xlsx)", key="export_person"):
+                rows_exp = []
+                for c in cards:
+                    for ym, s in c["stats"].items():
+                        work = s["ok"]+s["late"]+s["absent"]+s["forgot"]
+                        rows_exp.append({
+                            "ชื่อ-สกุล": c["name"], "กลุ่มงาน": c["dept"],
+                            "เดือน": ym, "มาปกติ": s["ok"], "มาสาย": s["late"],
+                            "ขาดงาน": s["absent"], "ลืมสแกน": s["forgot"],
+                            "ลา": s["leave"], "ไปราชการ": s["travel"],
+                            "วันทำการรวม": work,
+                            "% มาปกติ": round(s["ok"]/work*100) if work>0 else 0,
+                        })
+                buf_p = io.BytesIO()
+                with pd.ExcelWriter(buf_p, engine="xlsxwriter") as w:
+                    pd.DataFrame(rows_exp).to_excel(w, index=False, sheet_name="สรุปรายบุคคล")
+                st.download_button("⬇️ ดาวน์โหลด", buf_p.getvalue(),
+                                   "PersonSummary.xlsx", mime=EXCEL_MIME)
 
 # ============================================================
 # 📅 ตรวจสอบการปฏิบัติงาน
