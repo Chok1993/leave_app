@@ -206,9 +206,7 @@ ATTACHMENT_FOLDER_NAME = "Attachments_Leave_App"
 BACKUP_FOLDER_NAME     = "Backup"   # 📁 Backup/ — โฟลเดอร์หลักสำหรับ backup
 
 # ===========================
-# Google Drive Service
-# ===========================
-# Google Drive Service — auto-reconnect
+# Google Drive Service — lazy init
 # ===========================
 @st.cache_resource
 def init_drive_service():
@@ -219,7 +217,7 @@ def init_drive_service():
                 scopes=["https://www.googleapis.com/auth/drive"],
             )
             svc = build("drive", "v3", credentials=creds,
-                        cache_discovery=False)   # ป้องกัน stale cache
+                        cache_discovery=False)
             logger.info("Drive connected")
             return svc
         except Exception as e:
@@ -228,27 +226,29 @@ def init_drive_service():
                 st.stop()
             time.sleep(2 ** attempt)
 
-service = init_drive_service()
+# ── Lazy — ไม่เรียกตอน module load ──────────────────────────────────
+# service จะถูก init ครั้งแรกเมื่อ _get_service() ถูกเรียก
+_service_instance = None
 
 
 def _get_service():
     """
-    คืน Drive service ปัจจุบัน
-    ไม่ ping ทุกครั้ง — reconnect เฉพาะเมื่อ caller จับ exception แล้วเรียก _reconnect_service()
+    Lazy init: สร้าง Drive service ครั้งแรกที่ถูกใช้งาน
+    ไม่ block startup — ไม่ทำให้ health check timeout
     """
-    global service
-    if service is None:
-        service = init_drive_service()
-    return service
+    global _service_instance
+    if _service_instance is None:
+        _service_instance = init_drive_service()
+    return _service_instance
 
 
 def _reconnect_service():
     """เรียกเมื่อจับ BrokenPipe/ConnectionReset — สร้าง service ใหม่"""
-    global service
+    global _service_instance
     try:
         logger.warning("Drive service reconnecting...")
         init_drive_service.clear()
-        service = init_drive_service()
+        _service_instance = init_drive_service()
         logger.info("Drive service reconnected")
     except Exception as e:
         logger.error(f"Drive reconnect failed: {e}")
@@ -330,7 +330,7 @@ def get_file_id(filename: str, parent_id: str = FOLDER_ID) -> Optional[str]:
 
 def get_or_create_folder(folder_name: str, parent_id: str) -> Optional[str]:
     try:
-        res = service.files().list(
+        res = _get_service().files().list(
             q=f"name='{folder_name}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
             fields="files(id)",
             supportsAllDrives=True,
@@ -340,7 +340,7 @@ def get_or_create_folder(folder_name: str, parent_id: str) -> Optional[str]:
         if folders:
             return folders[0]["id"]
         meta = {"name": folder_name, "parents": [parent_id], "mimeType": "application/vnd.google-apps.folder"}
-        new = service.files().create(body=meta, supportsAllDrives=True, fields="id").execute()
+        new = _get_service().files().create(body=meta, supportsAllDrives=True, fields="id").execute()
         return new.get("id")
     except Exception as e:
         logger.error(f"get_or_create_folder({folder_name}): {e}")
@@ -591,7 +591,7 @@ def read_attendance_report() -> pd.DataFrame:
         return pd.DataFrame()
 
     try:
-        req = service.files().get_media(fileId=fid, supportsAllDrives=True)
+        req = _get_service().files().get_media(fileId=fid, supportsAllDrives=True)
         fh  = io.BytesIO()
         dl  = MediaIoBaseDownload(fh, req)
         done = False
@@ -676,7 +676,7 @@ def read_attendance_report() -> pd.DataFrame:
 def list_all_files_in_folder(parent_id: str = FOLDER_ID) -> List[dict]:
     """ดึงรายชื่อไฟล์ทั้งหมดใน Drive folder (เฉพาะ .xlsx)"""
     try:
-        res = service.files().list(
+        res = _get_service().files().list(
             q=(
                 f"'{parent_id}' in parents and trashed=false "
                 f"and mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
@@ -868,7 +868,7 @@ def _extract_travel_from_activity_log(df_log: pd.DataFrame) -> pd.DataFrame:
             fid = get_file_id(filename)
             if not fid:
                 return pd.DataFrame()
-            req = service.files().get_media(fileId=fid, supportsAllDrives=True)
+            req = _get_service().files().get_media(fileId=fid, supportsAllDrives=True)
             fh = io.BytesIO()
             dl = MediaIoBaseDownload(fh, req)
             done = False
@@ -970,13 +970,13 @@ def backup_excel(filename: str, df: pd.DataFrame) -> None:
         existing_bak_id = get_file_id(bak_name, bak_subfolder)
         if existing_bak_id:
             try:
-                service.files().delete(
+                _get_service().files().delete(
                     fileId=existing_bak_id, supportsAllDrives=True
                 ).execute()
             except Exception:
                 pass
 
-        service.files().copy(
+        _get_service().files().copy(
             fileId=fid,
             body={"name": bak_name, "parents": [bak_subfolder]},
             supportsAllDrives=True,
@@ -990,8 +990,8 @@ def upload_pdf_to_drive(uploaded_file, new_filename: str, folder_id: str) -> str
     try:
         meta = {"name": new_filename, "parents": [folder_id]}
         media = MediaIoBaseUpload(io.BytesIO(uploaded_file.getvalue()), mimetype="application/pdf", resumable=True)
-        created = service.files().create(body=meta, media_body=media, supportsAllDrives=True, fields="id, webViewLink").execute()
-        service.permissions().create(
+        created = _get_service().files().create(body=meta, media_body=media, supportsAllDrives=True, fields="id, webViewLink").execute()
+        _get_service().permissions().create(
             fileId=created["id"],
             body={"type": "anyone", "role": "reader"},
             supportsAllDrives=True,
@@ -3302,7 +3302,7 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
                             text=f"กำลังลบ {fname_del}...",
                         )
                         try:
-                            service.files().delete(fileId=fid_del, supportsAllDrives=True).execute()
+                            _get_service().files().delete(fileId=fid_del, supportsAllDrives=True).execute()
                             success_count += 1
                             logger.info(f"Cleanup deleted: {fname_del}")
                         except Exception as del_err:
