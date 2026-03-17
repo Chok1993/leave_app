@@ -297,6 +297,185 @@ def read_excel_from_drive(filename: str) -> pd.DataFrame:
             time.sleep(2 ** attempt)
     return pd.DataFrame()
 
+
+def _normalize_name(val) -> str:
+    """แปลงค่าชื่อให้เป็น string สะอาด — คืน '' ถ้าว่างหรือ nan"""
+    import re as _re
+    if val is None: return ""
+    s = str(val).strip()
+    if s.lower() in ("nan", "none", ""): return ""
+    # collapse internal whitespace
+    return _re.sub(r"\s+", " ", s)
+
+
+def _normalize_date(val) -> Optional[dt.date]:
+    """
+    แปลงวันที่หลายรูปแบบเป็น dt.date
+    รองรับ: datetime, Timestamp, string (d/m/Y, Y-m-d, d/m/Y H:M:S)
+    """
+    if val is None: return None
+    if isinstance(val, dt.datetime): return val.date()
+    if isinstance(val, dt.date): return val
+    try:
+        ts = pd.to_datetime(val, dayfirst=True, errors="coerce")
+        if pd.isna(ts): return None
+        return ts.date()
+    except Exception:
+        return None
+
+
+def _normalize_time_value(val) -> str:
+    """
+    แปลงค่าเวลาจาก Excel ทุกรูปแบบให้เป็น string "HH:MM"
+    คืน "" ถ้าแปลงไม่ได้หรือเป็น null
+    """
+    import re as _re, math
+    if val is None: return ""
+    # float NaN
+    if isinstance(val, float):
+        if math.isnan(val): return ""
+        # Excel stores time as fraction of day (0.375 = 09:00)
+        total_sec = int(round(val * 86400))
+        h = (total_sec // 3600) % 24
+        m = (total_sec % 3600) // 60
+        return f"{h:02d}:{m:02d}"
+    # timedelta / pd.Timedelta
+    if isinstance(val, (pd.Timedelta, dt.timedelta)):
+        total_sec = int(val.total_seconds())
+        if total_sec < 0: return ""
+        h = (total_sec // 3600) % 24
+        m = (total_sec % 3600) // 60
+        return f"{h:02d}:{m:02d}"
+    # datetime → extract time part
+    if isinstance(val, dt.datetime): return val.strftime("%H:%M")
+    if isinstance(val, dt.time): return val.strftime("%H:%M")
+    # string
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none", "nat", ""): return ""
+    # "0 days HH:MM:SS" หรือ "H:MM:SS" หรือ "HH:MM" หรือ "H:MM AM/PM"
+    m_re = _re.search(r"(\d+):(\d{2})(?::(\d{2}))?(?:\s*(AM|PM))?", s, _re.IGNORECASE)
+    if m_re:
+        h  = int(m_re.group(1))
+        mn = int(m_re.group(2))
+        meridiem = (m_re.group(4) or "").upper()
+        # days prefix
+        d_m = _re.search(r"(\d+)\s+day", s, _re.IGNORECASE)
+        if d_m: h += int(d_m.group(1)) * 24
+        # AM/PM
+        if meridiem == "PM" and h < 12: h += 12
+        elif meridiem == "AM" and h == 12: h = 0
+        return f"{h % 24:02d}:{mn:02d}"
+    return ""
+
+
+@st.cache_data(ttl=300)
+def read_attendance_report() -> pd.DataFrame:
+    """
+    อ่านและ normalize attendance_report.xlsx อย่างละเอียด
+    
+    โครงสร้างไฟล์จริง:
+      Col A = ชื่อพนักงาน  (ว่างสำหรับแถวที่ Admin คีย์แทน)
+      Col B = วันที่        (mixed format: d/m/Y, Y-m-d, datetime)
+      Col C = เวลาเข้า      (Timedelta / string / float)
+      Col D = เวลาออก       (เหมือน เวลาเข้า)
+      Col E = สาย
+      Col F = ออกก่อน
+      Col G = หมายเหตุ
+      Col H = ชื่อ-สกุล    (มีค่าเฉพาะแถวที่ col A ว่าง)
+    
+    กฎการ resolve ชื่อ:
+      - ถ้า col A มีค่า → ใช้ col A เป็นชื่อ-สกุล
+      - ถ้า col A ว่าง แต่ col H มีค่า → ใช้ col H (Admin คีย์แทน)
+      - ถ้าทั้งคู่ว่าง → ข้ามแถวนี้ไป
+    """
+    # ── อ่านไฟล์ดิบ ────────────────────────────────────────────
+    fid = get_file_id(FILE_ATTEND)
+    if not fid:
+        logger.warning("attendance_report.xlsx: ไม่พบในไฟล์ Drive")
+        return pd.DataFrame()
+
+    try:
+        req = service.files().get_media(fileId=fid, supportsAllDrives=True)
+        fh  = io.BytesIO()
+        dl  = MediaIoBaseDownload(fh, req)
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
+        fh.seek(0)
+        # dtype=str เพื่อป้องกัน pandas auto-cast ผิดพลาด ยกเว้น column ที่ต้องเป็น numeric
+        df_raw = pd.read_excel(
+            fh,
+            engine="openpyxl",
+            header=0,
+            dtype=str,           # อ่านทุก column เป็น string ก่อน → parse เองในขั้นถัดไป
+        )
+    except Exception as e:
+        logger.error(f"read_attendance_report: {e}")
+        return pd.DataFrame()
+
+    if df_raw.empty:
+        return pd.DataFrame()
+
+    # ── normalize column names ─────────────────────────────────
+    df_raw.columns = [str(c).strip() for c in df_raw.columns]
+
+    # map column ที่รู้จัก (ชื่ออาจต่างกันได้)
+    COL_NAME_A = next((c for c in df_raw.columns if c in ("ชื่อพนักงาน", "ชื่อ")), None)
+    COL_DATE   = next((c for c in df_raw.columns if c in ("วันที่", "date", "Date")), None)
+    COL_IN     = next((c for c in df_raw.columns if c in ("เวลาเข้า", "เข้า", "check_in")), None)
+    COL_OUT    = next((c for c in df_raw.columns if c in ("เวลาออก", "ออก", "check_out")), None)
+    COL_NOTE   = next((c for c in df_raw.columns if c in ("หมายเหตุ", "note", "Note")), None)
+    COL_NAME_H = next((c for c in df_raw.columns if c in ("ชื่อ-สกุล",)), None)
+
+    if COL_DATE is None:
+        logger.error("read_attendance_report: ไม่พบคอลัมน์วันที่")
+        return pd.DataFrame()
+
+    rows_out: list = []
+
+    for _, row in df_raw.iterrows():
+        # ── resolve ชื่อ ──────────────────────────────────────
+        name_a = _normalize_name(row.get(COL_NAME_A, "")) if COL_NAME_A else ""
+        name_h = _normalize_name(row.get(COL_NAME_H, "")) if COL_NAME_H else ""
+
+        if name_a:
+            name = name_a          # col A ก่อนเสมอ
+        elif name_h:
+            name = name_h          # col H fallback (Admin คีย์แทน)
+        else:
+            continue               # ไม่มีชื่อ → ข้าม
+
+        # ── resolve วันที่ ────────────────────────────────────
+        date_val = _normalize_date(row.get(COL_DATE, ""))
+        if date_val is None:
+            continue               # ไม่มีวันที่ valid → ข้าม
+
+        # ── resolve เวลา ──────────────────────────────────────
+        t_in_str  = _normalize_time_value(row.get(COL_IN,  "")) if COL_IN  else ""
+        t_out_str = _normalize_time_value(row.get(COL_OUT, "")) if COL_OUT else ""
+
+        # ── หมายเหตุ ──────────────────────────────────────────
+        note = str(row.get(COL_NOTE, "") or "").strip()
+
+        rows_out.append({
+            "ชื่อ-สกุล": name,
+            "วันที่":     pd.Timestamp(date_val),
+            "เวลาเข้า":   t_in_str,
+            "เวลาออก":    t_out_str,
+            "หมายเหตุ":   note,
+        })
+
+    if not rows_out:
+        return pd.DataFrame(columns=["ชื่อ-สกุล", "วันที่", "เวลาเข้า", "เวลาออก", "หมายเหตุ"])
+
+    df_out = pd.DataFrame(rows_out)
+    df_out["วันที่"] = pd.to_datetime(df_out["วันที่"], errors="coerce").dt.normalize()
+    df_out["เดือน"] = df_out["วันที่"].dt.strftime("%Y-%m")
+    df_out = df_out.dropna(subset=["วันที่"])
+    df_out = df_out[df_out["ชื่อ-สกุล"] != ""].reset_index(drop=True)
+    logger.info(f"read_attendance_report: {len(df_out)} rows loaded")
+    return df_out
+
 @st.cache_data(ttl=300)
 def list_all_files_in_folder(parent_id: str = FOLDER_ID) -> List[dict]:
     """ดึงรายชื่อไฟล์ทั้งหมดใน Drive folder (เฉพาะ .xlsx)"""
@@ -603,17 +782,14 @@ def preprocess_dataframes(df_leave, df_travel, df_att):
     ทำให้ df_leave / df_travel / df_att ที่ return ออกไปยังไม่ถูก clean
     แก้โดย assign ตรงๆ ทีละตัวแทน
     """
-    # Rename columns (df_att อาจมีชื่อคอลัมน์ต่างกัน)
-    # FIX: ถ้า df_att มีทั้ง "ชื่อพนักงาน" (col A) และ "ชื่อ-สกุล" (col H) พร้อมกัน
-    #      ให้ใช้ "ชื่อพนักงาน" เป็นหลัก แล้วลบ "ชื่อ-สกุล" เดิมออกก่อน rename
+    # Rename columns ใน df_att — ทำเฉพาะกรณีที่ df_att ยังไม่ผ่าน read_attendance_report
+    # (เช่น ถูกส่งมาจากที่อื่น) เพื่อความ backward compat
     if not df_att.empty:
         for old, new in COLUMN_MAPPING.items():
             if old in df_att.columns:
                 if new in df_att.columns:
-                    # มีทั้งสอง column — ลบ new เดิมออกก่อน (old จะถูก rename เป็น new)
                     df_att = df_att.drop(columns=[new])
                 df_att = df_att.rename(columns={old: new})
-        # ป้องกัน duplicate columns ที่อาจยังหลงเหลือ
         if df_att.columns.duplicated().any():
             df_att = df_att.loc[:, ~df_att.columns.duplicated()].copy()
     # Normalize dates
@@ -1214,7 +1390,7 @@ if menu == "🏠 หน้าหลัก":
     with st.spinner("กำลังโหลดภาพรวม..."):
         df_leave  = read_excel_from_drive(FILE_LEAVE)
         df_travel = read_excel_from_drive(FILE_TRAVEL)
-        df_att    = read_excel_from_drive(FILE_ATTEND)
+        df_att    = read_attendance_report()
         df_leave, df_travel, df_att = preprocess_dataframes(df_leave, df_travel, df_att)
 
     # Quick KPIs
@@ -1266,7 +1442,7 @@ elif menu == "📊 Dashboard & รายงาน":
     with st.spinner("กำลังโหลดข้อมูล..."):
         df_leave  = read_excel_from_drive(FILE_LEAVE)
         df_travel = read_excel_from_drive(FILE_TRAVEL)
-        df_att    = read_excel_from_drive(FILE_ATTEND)
+        df_att    = read_attendance_report()
         df_leave, df_travel, df_att = preprocess_dataframes(df_leave, df_travel, df_att)
 
     # KPIs
@@ -1591,7 +1767,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
     st.markdown('<div class="section-header">📅 สรุปการมาปฏิบัติงานรายวัน</div>', unsafe_allow_html=True)
 
     with st.spinner("กำลังโหลดข้อมูล..."):
-        df_att    = read_excel_from_drive(FILE_ATTEND)
+        df_att    = read_attendance_report()
         df_leave  = read_excel_from_drive(FILE_LEAVE)
         df_staff  = read_excel_from_drive(FILE_STAFF)
         df_travel_all = load_all_travel()
@@ -2174,7 +2350,7 @@ elif menu == "🧭 บันทึกไปราชการ":
     with st.spinner("กำลังโหลดข้อมูล..."):
         df_travel = read_excel_from_drive(FILE_TRAVEL)
         df_leave  = read_excel_from_drive(FILE_LEAVE)
-        df_att    = read_excel_from_drive(FILE_ATTEND)
+        df_att    = read_attendance_report()
         df_staff  = read_excel_from_drive(FILE_STAFF)
         df_leave, df_travel, df_att = preprocess_dataframes(df_leave, df_travel, df_att)
         ALL_NAMES = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, df_att)
@@ -2264,7 +2440,7 @@ elif menu == "🕒 บันทึกการลา":
     with st.spinner("กำลังโหลดข้อมูล..."):
         df_leave  = read_excel_from_drive(FILE_LEAVE)
         df_travel = read_excel_from_drive(FILE_TRAVEL)
-        df_att    = read_excel_from_drive(FILE_ATTEND)
+        df_att    = read_attendance_report()
         df_staff  = read_excel_from_drive(FILE_STAFF)
         df_leave, df_travel, df_att = preprocess_dataframes(df_leave, df_travel, df_att)
         ALL_NAMES = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, df_att)
@@ -2571,7 +2747,7 @@ elif menu == "⚙️ ผู้ดูแลระบบ":
         with st.spinner("กำลังโหลด..."):
             df_leave  = read_excel_from_drive(FILE_LEAVE)
             df_travel = read_excel_from_drive(FILE_TRAVEL)
-            df_att    = read_excel_from_drive(FILE_ATTEND)
+            df_att    = read_attendance_report()
             df_staff  = read_excel_from_drive(FILE_STAFF)
 
         tab1, tab2, tab3, tab4, tab5, tab6, tab_hol = st.tabs([
@@ -2820,7 +2996,7 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
                             )
 
                     # ตรวจซ้ำใน attendance_report.xlsx
-                    df_att_check = read_excel_from_drive(FILE_ATTEND)
+                    df_att_check = read_attendance_report()
                     if not df_att_check.empty and "วันที่" in df_att_check.columns:
                         df_att_check["วันที่"] = pd.to_datetime(df_att_check["วันที่"], errors="coerce").dt.normalize()
                         name_col_chk = next(
