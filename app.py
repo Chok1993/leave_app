@@ -111,15 +111,27 @@ _NON_TRAVEL_FILES={FILE_ATTEND,FILE_LEAVE,FILE_STAFF,FILE_NOTIFY,FILE_HOLIDAYS,F
 # ===========================
 # ☁️ Google Drive Service
 # ===========================
-@st.cache_resource(ttl=3600, show_spinner=False)
 def get_drive_service():
-    try:
-        creds = service_account.Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=["https://www.googleapis.com/auth/drive"])
-        svc = build("drive", "v3", credentials=creds, cache_discovery=False)
-        logger.info("Drive service initialized.")
-        return svc
-    except Exception as e:
-        logger.error(f"Drive init failed: {e}"); st.error("❌ เชื่อมต่อ Google Drive ไม่สำเร็จ"); st.stop()
+    """
+    สร้าง Drive Service แบบ 1 Connection ต่อ 1 Session
+    ป้องกัน Segfault จาก httplib2 ที่ไม่ Thread-safe
+    (ไม่ใช้ @st.cache_resource เพราะแชร์ข้าม Thread ทำให้ crash)
+    """
+    if "_drive_svc" not in st.session_state:
+        try:
+            creds = service_account.Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"],
+                scopes=["https://www.googleapis.com/auth/drive"],
+            )
+            st.session_state["_drive_svc"] = build(
+                "drive", "v3", credentials=creds, cache_discovery=False
+            )
+            logger.info("Drive service created for session.")
+        except Exception as e:
+            logger.error("Drive init failed: %s", e)
+            st.error("❌ เชื่อมต่อ Google Drive ไม่สำเร็จ")
+            st.stop()
+    return st.session_state["_drive_svc"]
 
 def _drive_execute(request, retries: int = 4):
     _TE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ConnectionRefusedError, OSError, ssl.SSLError, TimeoutError)
@@ -940,7 +952,12 @@ with st.sidebar:
     st.caption(f"v3.0 | {dt.date.today().strftime('%d/%m/%Y')}")
 
 # ✅ FIX: เรียก cache หลัง sidebar init ครบแล้ว
-_load_all_data_to_cache()
+# ตรวจ session_state ก่อน — ป้องกัน health check timeout ตอน startup
+if "cache_leave" not in st.session_state:
+    with st.spinner("⏳ โหลดข้อมูลเริ่มต้นระบบ..."):
+        _load_all_data_to_cache()
+else:
+    _load_all_data_to_cache()  # ถ้ามีแล้ว จะ return ทันทีถ้า cache ยังสด
 
 # ===========================
 # 🏠 หน้าหลัก
