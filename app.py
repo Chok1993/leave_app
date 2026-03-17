@@ -257,9 +257,33 @@ def _reconnect_service():
 def _drive_execute(request, retries: int = 4):
     """
     Execute Drive API request พร้อม retry + exponential backoff
-    รองรับ: Broken pipe, ConnectionReset, 500/503, rate limit (429)
+    รองรับ: BrokenPipe, ConnectionReset, SSL, socket, HTTP 429/5xx
     """
     from googleapiclient.errors import HttpError
+    import ssl
+
+    # transport-level errors ที่ควร reconnect + retry
+    _TRANSPORT_ERRORS = (
+        BrokenPipeError,
+        ConnectionResetError,
+        ConnectionAbortedError,
+        ConnectionRefusedError,
+        OSError,
+        ssl.SSLError,
+        TimeoutError,
+    )
+
+    # ลอง import httplib2 / urllib3 errors ถ้ามี
+    try:
+        from httplib2 import ServerNotFoundError as _Http2Err
+        _TRANSPORT_ERRORS = _TRANSPORT_ERRORS + (_Http2Err,)
+    except ImportError:
+        pass
+    try:
+        from urllib3.exceptions import ProtocolError as _Urllib3Err
+        _TRANSPORT_ERRORS = _TRANSPORT_ERRORS + (_Urllib3Err,)
+    except ImportError:
+        pass
 
     last_exc = None
     for attempt in range(retries):
@@ -274,13 +298,21 @@ def _drive_execute(request, retries: int = 4):
                 last_exc = e
                 continue
             raise   # 400/403/404 → raise ทันที
-        except (BrokenPipeError, ConnectionResetError, OSError) as e:
-            logger.warning(f"Drive pipe error ({type(e).__name__}) — reconnect & retry {attempt+1}/{retries}")
+        except _TRANSPORT_ERRORS as e:
+            logger.warning(f"Drive transport error ({type(e).__name__}) — reconnect & retry {attempt+1}/{retries}")
             _reconnect_service()
             time.sleep(2 ** attempt)
             last_exc = e
             continue
         except Exception as e:
+            # ตรวจ SSL error ที่อาจมาในรูป Exception ทั่วไป
+            err_str = str(e).lower()
+            if any(k in err_str for k in ('ssl', 'record layer', 'handshake', 'eof occurred')):
+                logger.warning(f"Drive SSL error — reconnect & retry {attempt+1}/{retries}: {e}")
+                _reconnect_service()
+                time.sleep(2 ** attempt)
+                last_exc = e
+                continue
             raise
 
     raise last_exc or RuntimeError("Drive API: max retries exceeded")
@@ -318,7 +350,9 @@ def get_file_id(filename: str, parent_id: str = FOLDER_ID) -> Optional[str]:
                 except Exception:
                     pass
             return keep_id
-        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError, Exception) as e:
+            if not isinstance(e, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError)) and not any(k in str(e).lower() for k in ("ssl","record layer","handshake","eof")):
+                raise
             logger.warning(f"get_file_id({filename}) attempt {attempt+1}: {e}")
             _reconnect_service()
             time.sleep(2 ** attempt)
@@ -363,7 +397,9 @@ def read_excel_from_drive(filename: str) -> pd.DataFrame:
                 _, done = dl.next_chunk()
             fh.seek(0)
             return pd.read_excel(fh, engine="openpyxl")
-        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError, Exception) as e:
+            if not isinstance(e, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError)) and not any(k in str(e).lower() for k in ("ssl","record layer","handshake","eof")):
+                raise
             logger.warning(f"read_excel_from_drive({filename}) attempt {attempt+1}: {e}")
             _reconnect_service()
             time.sleep(2 ** attempt)
@@ -395,7 +431,9 @@ def read_excel_with_id(filename: str) -> Tuple[pd.DataFrame, Optional[str]]:
                 _, done = dl.next_chunk()
             fh.seek(0)
             return pd.read_excel(fh, engine="openpyxl"), fid
-        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError, Exception) as e:
+            if not isinstance(e, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError)) and not any(k in str(e).lower() for k in ("ssl","record layer","handshake","eof")):
+                raise
             logger.warning(f"read_excel_with_id({filename}) attempt {attempt+1}: {e}")
             _reconnect_service()
             time.sleep(2 ** attempt)
@@ -420,7 +458,9 @@ def _read_file_by_id(file_id: str) -> pd.DataFrame:
                 _, done = dl.next_chunk()
             fh.seek(0)
             return pd.read_excel(fh, engine="openpyxl")
-        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError, Exception) as e:
+            if not isinstance(e, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError)) and not any(k in str(e).lower() for k in ("ssl","record layer","handshake","eof")):
+                raise
             logger.warning(f"_read_file_by_id({file_id}) attempt {attempt+1}: {e}")
             _reconnect_service()
             time.sleep(2 ** attempt)
@@ -923,7 +963,9 @@ def write_excel_to_drive(filename: str, df: pd.DataFrame,
             st.cache_data.clear()
             return True
 
-        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError, Exception) as e:
+            if not isinstance(e, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError)) and not any(k in str(e).lower() for k in ("ssl","record layer","handshake","eof")):
+                raise
             logger.warning(f"write_excel_to_drive({filename}) attempt {attempt+1}: {e}")
             _reconnect_service()
             try: buf.seek(0)
@@ -1000,9 +1042,115 @@ def upload_pdf_to_drive(uploaded_file, new_filename: str, folder_id: str) -> str
 # ===========================
 # Data Processing
 # ===========================
+def _parse_date_flex(val) -> Optional[pd.Timestamp]:
+    """
+    แปลงวันที่ทุกรูปแบบที่พบในไฟล์ leave_report.xlsx ให้เป็น pd.Timestamp
+
+    รูปแบบที่รองรับ:
+      1. pd.Timestamp / datetime.datetime / datetime.date  → คืนตรง
+      2. float / int  → Excel serial number (เช่น 45678.0)
+      3. ISO string   → "2025-11-04"  "2025-11-04 13:29"  "2026-01-12 07:11:17"
+      4. M/D/YYYY     → "10/1/2025"  "10/31/2025 0:00:00"   (Excel US export)
+      5. D/M/YYYY     → "3/11/2025"  "6/11/2025 0:00:00"
+      6. DD/MM/พ.ศ.   → "01/12/2568 13.48"  "28/11/2568 7.07"  (Thai Buddhist Era)
+      7. DD/MM/CE     → "01/12/2025 13:48"
+      8. วัน/เดือน/ปี ที่มี . แทน : ในส่วนเวลา
+
+    กลยุทธ์แก้ ambiguity M/D vs D/M:
+      - ถ้า part แรก > 12 → ต้องเป็น D/M (เช่น 13/11/2025 = 13 พย.)
+      - ถ้า part แรก ≤ 12 และ part สอง > 12 → ต้องเป็น M/D (เช่น 10/31/2025 = ตค.)
+      - ถ้า part แรก ≤ 12 และ part สอง ≤ 12 → ดูปี: ถ้าปี > 2400 = พ.ศ. ใช้ D/M
+        ถ้าไม่แน่ใจ → ใช้ M/D (Excel US default)
+    """
+    import re as _re
+
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return pd.NaT
+
+    # pd.Timestamp / datetime
+    if isinstance(val, pd.Timestamp):
+        return val
+    if isinstance(val, (dt.datetime, dt.date)):
+        return pd.Timestamp(val)
+
+    # Excel serial number (float/int)
+    if isinstance(val, (int, float)):
+        try:
+            return pd.Timestamp("1899-12-30") + pd.Timedelta(days=float(val))
+        except Exception:
+            return pd.NaT
+
+    val_str = str(val).strip()
+    if not val_str or val_str.lower() in ("nat", "nan", "none", ""):
+        return pd.NaT
+
+    # ── 1. ISO format (YYYY-MM-DD ...) ─────────────────────────────
+    if _re.match(r"^\d{4}-\d{2}-\d{2}", val_str):
+        try:
+            return pd.Timestamp(val_str[:19])
+        except Exception:
+            pass
+
+    # ── 2. แยก date part และ time part ─────────────────────────────
+    # normalize: แทน "." ในส่วนเวลาด้วย ":"  เช่น "28/11/2568 7.07" → "28/11/2568 7:07"
+    val_clean = _re.sub(r"(\d{1,2})\.(\d{2})(\s*$)", r"\1:\2", val_str)
+    # ตัดเวลาออก เก็บแค่วันที่
+    date_part = val_clean.split(" ")[0].split("T")[0]
+    parts = date_part.split("/")
+    if len(parts) != 3:
+        # fallback
+        try:
+            return pd.to_datetime(val_str, dayfirst=True, errors="coerce")
+        except Exception:
+            return pd.NaT
+
+    try:
+        a, b, c = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return pd.NaT
+
+    # ── 3. แก้ปีพ.ศ. → ค.ศ. ─────────────────────────────────────
+    year = c
+    if year > 2400:          # พ.ศ. (เช่น 2568)
+        year = year - 543
+    elif year < 100:         # ปีย่อ 2 หลัก
+        year = 2000 + year
+
+    # ── 4. resolve D/M vs M/D ────────────────────────────────────
+    if a > 12:               # part แรก > 12 → ต้องเป็นวัน
+        day, month = a, b
+    elif b > 12:             # part สอง > 12 → ต้องเป็นเดือน แล้ว a = month
+        month, day = a, b
+    elif c > 2400:           # ปีพ.ศ. → ใช้ D/M/YYYY ตามแบบไทย
+        day, month = a, b
+    else:                    # ทั้ง a,b ≤ 12 + ปีค.ศ. → ใช้ M/D (Excel US default)
+        month, day = a, b
+
+    try:
+        return pd.Timestamp(year=year, month=month, day=day)
+    except Exception:
+        # ลอง swap ถ้า invalid (เช่น month=13)
+        try:
+            return pd.Timestamp(year=year, month=day, day=month)
+        except Exception:
+            return pd.NaT
+
+
 def normalize_date_col(df: pd.DataFrame, col: str) -> pd.DataFrame:
-    if not df.empty and col in df.columns:
-        df[col] = pd.to_datetime(df[col], errors="coerce").dt.normalize()
+    """
+    แปลงคอลัมน์วันที่ด้วย _parse_date_flex รองรับทุกรูปแบบที่พบในไฟล์จริง
+    """
+    if df.empty or col not in df.columns:
+        return df
+    series = df[col]
+    # ถ้า pandas อ่านเป็น datetime แล้ว → normalize ตรง
+    if pd.api.types.is_datetime64_any_dtype(series):
+        df[col] = series.dt.normalize()
+        return df
+    # อ่านเป็น object/string → ใช้ parser ที่ robust
+    df[col] = series.apply(_parse_date_flex)
+    # normalize เวลาออก (เก็บแค่วันที่)
+    df[col] = pd.to_datetime(df[col], errors="coerce").dt.normalize()
     return df
 
 def clean_names(df: pd.DataFrame, col: str) -> pd.DataFrame:
