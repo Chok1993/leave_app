@@ -961,6 +961,7 @@ def write_excel_to_drive(filename: str, df: pd.DataFrame,
                 logger.info(f"write_excel_to_drive: created '{filename}' id={new_file.get('id')}")
 
             st.cache_data.clear()
+            _invalidate_cache()  # โหลด cache ใหม่รอบต่อไป
             return True
 
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError, Exception) as e:
@@ -1767,6 +1768,86 @@ def check_admin_password(password: str) -> bool:
 # ===========================
 # 🚀 Main App
 # ===========================
+
+# ── DataCache: โหลดข้อมูลทุกไฟล์ครั้งเดียว เก็บใน session_state ──────
+# อัลกอริทึม:
+#   1. ตรวจ session_state ก่อน — ถ้ามีและยังไม่หมดอายุ (TTL) → ใช้เลย (O(1))
+#   2. ถ้าหมดอายุหรือไม่มี → โหลดจาก Drive พร้อมกันทุกไฟล์ (batch)
+#   3. บันทึกลง session_state + timestamp
+# ผลลัพธ์: ทุกเมนูอ่านจาก RAM ไม่ต้อง round-trip Drive ซ้ำ
+
+_CACHE_TTL_SEC = 300   # 5 นาที
+
+def _cache_is_fresh() -> bool:
+    ts = st.session_state.get("_data_loaded_at")
+    if ts is None:
+        return False
+    return (dt.datetime.now() - ts).total_seconds() < _CACHE_TTL_SEC
+
+def _load_all_data_to_cache(force: bool = False) -> None:
+    """
+    โหลดทุกไฟล์จาก Drive แบบ batch แล้วเก็บใน session_state
+    เรียกครั้งเดียวต่อ session (หรือเมื่อกด refresh)
+    """
+    if not force and _cache_is_fresh():
+        return
+
+    with st.spinner("⏳ กำลังโหลดข้อมูล..."):
+        # โหลดไฟล์ที่ต้องการ file_id (สำหรับ write)
+        df_leave,  _fid_leave  = read_excel_with_backup(
+            FILE_LEAVE,  dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])
+        df_travel_raw, _fid_travel = read_excel_with_backup(
+            FILE_TRAVEL, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","เรื่อง/กิจกรรม"])
+        df_staff,  _fid_staff  = read_excel_with_backup(
+            FILE_STAFF,  dedup_cols=["ชื่อ-สกุล"])
+
+        # ไฟล์ที่ไม่ต้อง write กลับ
+        df_att     = read_attendance_report()
+        df_manual  = load_manual_scans()
+        df_travel_all = load_all_travel()   # รวม backup + ผู้ร่วมเดินทาง
+
+        # Preprocess ทั้งหมด
+        df_leave, df_travel_raw, df_att = preprocess_dataframes(
+            df_leave, df_travel_raw, df_att)
+        _, df_travel_all, _ = preprocess_dataframes(
+            pd.DataFrame(), df_travel_all, pd.DataFrame())
+
+        # merge manual scans
+        df_att = merge_attendance_with_manual(df_att, df_manual)
+
+        # บันทึกลง session_state
+        st.session_state.update({
+            # DataFrames
+            "cache_leave":       df_leave,
+            "cache_travel":      df_travel_raw,
+            "cache_travel_all":  df_travel_all,
+            "cache_att":         df_att,
+            "cache_staff":       df_staff,
+            "cache_manual":      df_manual,
+            # File IDs สำหรับ write-back
+            "_fid_leave":        _fid_leave,
+            "_fid_travel":       _fid_travel,
+            "_fid_staff":        _fid_staff,
+            # Timestamp
+            "_data_loaded_at":   dt.datetime.now(),
+        })
+
+def _dc(key: str, default=None):
+    """DataCache getter — ดึงข้อมูลจาก session_state (O(1))"""
+    val = st.session_state.get(key, default)
+    return val if val is not None else (pd.DataFrame() if default is None else default)
+
+def _invalidate_cache() -> None:
+    """
+    เรียกหลัง write ข้อมูลสำเร็จ — ล้าง timestamp ให้ครั้งต่อไปที่สลับเมนู
+    จะโหลดข้อมูลใหม่จาก Drive อัตโนมัติ
+    """
+    st.session_state.pop("_data_loaded_at", None)
+
+# โหลดครั้งแรก (หรือถ้า cache หมดอายุ)
+_load_all_data_to_cache()
+
+# ── Sidebar ─────────────────────────────────────────────────────────────
 # Sidebar
 with st.sidebar:
     st.markdown("## 🏥 สคร.9 HR System")
@@ -1788,6 +1869,13 @@ with st.sidebar:
         label_visibility="collapsed",
     )
     st.markdown("---")
+    loaded_at = st.session_state.get("_data_loaded_at")
+    if loaded_at:
+        age_sec = int((dt.datetime.now() - loaded_at).total_seconds())
+        st.caption(f"🗄️ Cache: {age_sec//60}:{age_sec%60:02d} นาที")
+    if st.button("🔄 โหลดข้อมูลใหม่", use_container_width=True):
+        _load_all_data_to_cache(force=True)
+        st.rerun()
     st.caption(f"v3.0 | {dt.date.today().strftime('%d/%m/%Y')}")
 
 # ============================================================
@@ -1796,11 +1884,9 @@ with st.sidebar:
 if menu == "🏠 หน้าหลัก":
     st.markdown('<div class="section-header">🏥 ระบบติดตามการลา ไปราชการ และการปฏิบัติงาน<br>สำนักงานป้องกันควบคุมโรคที่ 9</div>', unsafe_allow_html=True)
 
-    with st.spinner("กำลังโหลดภาพรวม..."):
-        df_leave  = read_excel_with_backup(FILE_LEAVE, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])[0]
-        df_travel = read_excel_with_backup(FILE_TRAVEL, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","เรื่อง/กิจกรรม"])[0]
-        df_att    = read_attendance_report()
-        df_leave, df_travel, df_att = preprocess_dataframes(df_leave, df_travel, df_att)
+    df_leave  = _dc("cache_leave")
+    df_travel = _dc("cache_travel")
+    df_att    = _dc("cache_att")
 
     # Quick KPIs
     c1, c2, c3, c4 = st.columns(4)
@@ -1840,7 +1926,7 @@ if menu == "🏠 หน้าหลัก":
         line_token = st.secrets.get("line_notify_token", "")
         st.markdown(f"LINE Notify: {'🟢 เชื่อมต่อแล้ว' if line_token else '🔴 ยังไม่ตั้งค่า'}")
         st.markdown(f"Google Drive: 🟢 เชื่อมต่อแล้ว")
-        st.markdown(f"Staff Master: {'🟢 มีข้อมูล' if not read_excel_from_drive(FILE_STAFF).empty else '🟡 ยังไม่มีข้อมูล'}")
+        st.markdown(f"Staff Master: {'🟢 มีข้อมูล' if not _dc('cache_staff').empty else '🟡 ยังไม่มีข้อมูล'}")
 
 # ============================================================
 # 📊 Dashboard & รายงาน
@@ -1848,16 +1934,12 @@ if menu == "🏠 หน้าหลัก":
 elif menu == "📊 Dashboard & รายงาน":
     st.markdown('<div class="section-header">📊 Dashboard & วิเคราะห์ข้อมูล</div>', unsafe_allow_html=True)
 
-    with st.spinner("กำลังโหลดข้อมูล..."):
-        df_leave   = read_excel_with_backup(FILE_LEAVE, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])[0]
-        df_travel  = read_excel_with_backup(FILE_TRAVEL, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","เรื่อง/กิจกรรม"])[0]
-        df_att_raw = read_attendance_report()
-        df_staff   = read_excel_from_drive(FILE_STAFF)
-        df_leave, df_travel, df_att_raw = preprocess_dataframes(df_leave, df_travel, df_att_raw)
-        df_manual  = load_manual_scans()
-        df_att     = merge_attendance_with_manual(df_att_raw, df_manual)
-        df_travel_all = load_all_travel()
-        _, df_travel_pp, _ = preprocess_dataframes(df_leave, df_travel_all, pd.DataFrame())
+    df_leave      = _dc("cache_leave")
+    df_travel     = _dc("cache_travel")
+    df_att        = _dc("cache_att")
+    df_staff      = _dc("cache_staff")
+    df_travel_all = _dc("cache_travel_all")
+    df_travel_pp  = df_travel_all
 
     # ── CSS เฉพาะ Dashboard ──────────────────────────────────────────
     st.markdown("""
@@ -2289,23 +2371,14 @@ elif menu == "📊 Dashboard & รายงาน":
 elif menu == "📅 ตรวจสอบการปฏิบัติงาน":
     st.markdown('<div class="section-header">📅 สรุปการมาปฏิบัติงานรายวัน</div>', unsafe_allow_html=True)
 
-    with st.spinner("กำลังโหลดข้อมูล..."):
-        df_att    = read_attendance_report()
-        df_leave  = read_excel_with_backup(FILE_LEAVE, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])[0]
-        df_staff  = read_excel_from_drive(FILE_STAFF)
-        df_travel_all = load_all_travel()
-
-        # ── ขั้นตอนที่ 1: preprocess ก่อนเสมอ (rename + normalize dates + clean names)
-        # ต้องทำก่อน merge เพื่อให้ชื่อ column ถูกต้อง
-        df_leave, df_travel_pp, df_att = preprocess_dataframes(df_leave, df_travel_all, df_att)
-
-        # ── ขั้นตอนที่ 2: merge manual scans (ตอนนี้ df_att มี "ชื่อ-สกุล" ถูกต้องแล้ว)
-        df_manual = load_manual_scans()
-        df_att    = merge_attendance_with_manual(df_att, df_manual)
-
-        all_names = get_active_staff(df_staff) or get_all_names_fallback(
-            df_leave, df_travel_all, df_att
-        )
+    df_att        = _dc("cache_att")
+    df_leave      = _dc("cache_leave")
+    df_staff      = _dc("cache_staff")
+    df_travel_all = _dc("cache_travel_all")
+    df_travel_pp  = df_travel_all
+    all_names     = get_active_staff(df_staff) or get_all_names_fallback(
+        df_leave, df_travel_all, df_att
+    )
 
     # แสดงแหล่งข้อมูลที่โหลดมา
     travel_sources = df_travel_all["_source_file"].unique().tolist() if not df_travel_all.empty and "_source_file" in df_travel_all.columns else [FILE_TRAVEL]
@@ -2406,7 +2479,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
         sel_att_group = st.selectbox("🏢 กลุ่มงาน", ["ทุกกลุ่ม"] + STAFF_GROUPS, key="att_group")
 
     # ── กรองชื่อตามกลุ่มงาน ────────────────────────────────
-    df_staff_att = read_excel_from_drive(FILE_STAFF)
+    df_staff_att = _dc("cache_staff")
     # normalize names ก่อนเปรียบเทียบ
     names_to_process = [
         str(n).strip().replace("  ", " ") for n in (selected_names or all_names)
@@ -2788,12 +2861,10 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
 elif menu == "📅 ปฏิทินกลาง":
     st.markdown('<div class="section-header">📅 ปฏิทินกลางหน่วยงาน</div>', unsafe_allow_html=True)
 
-    with st.spinner("กำลังโหลดข้อมูล..."):
-        df_leave  = read_excel_with_backup(FILE_LEAVE, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])[0]
-        df_travel = read_excel_with_backup(FILE_TRAVEL, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","เรื่อง/กิจกรรม"])[0]
-        df_staff  = read_excel_from_drive(FILE_STAFF)
-        df_leave, df_travel, _ = preprocess_dataframes(df_leave, df_travel, pd.DataFrame())
-        all_names = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, pd.DataFrame())
+    df_leave  = _dc("cache_leave")
+    df_travel = _dc("cache_travel")
+    df_staff  = _dc("cache_staff")
+    all_names = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, pd.DataFrame())
 
     today = dt.date.today()
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -2870,12 +2941,11 @@ elif menu == "📅 ปฏิทินกลาง":
 elif menu == "🧭 บันทึกไปราชการ":
     st.markdown('<div class="section-header">🧭 บันทึกการเดินทางไปราชการ</div>', unsafe_allow_html=True)
 
-    with st.spinner("กำลังโหลดข้อมูล..."):
-        df_travel, _travel_fid = read_excel_with_backup(FILE_TRAVEL, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","เรื่อง/กิจกรรม"])
-        df_leave  = read_excel_with_backup(FILE_LEAVE, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])[0]
-        df_staff  = read_excel_from_drive(FILE_STAFF)
-        df_leave, df_travel, _ = preprocess_dataframes(df_leave, df_travel, pd.DataFrame())
-        ALL_NAMES = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, pd.DataFrame())
+    df_travel   = _dc("cache_travel")
+    _travel_fid = st.session_state.get("_fid_travel")
+    df_leave    = _dc("cache_leave")
+    df_staff    = _dc("cache_staff")
+    ALL_NAMES   = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, pd.DataFrame())
 
     st.info(f"📂 ข้อมูลไปราชการปัจจุบัน: **{len(df_travel)} รายการ**  "
             f"{'(file ID: ' + _travel_fid[:8] + '...)' if _travel_fid else '⚠️ ยังไม่มีไฟล์ใน Drive'}")
@@ -2964,13 +3034,12 @@ elif menu == "🧭 บันทึกไปราชการ":
 elif menu == "🕒 บันทึกการลา":
     st.markdown('<div class="section-header">🕒 บันทึกการลา</div>', unsafe_allow_html=True)
 
-    with st.spinner("กำลังโหลดข้อมูล..."):
-        df_leave, _leave_fid = read_excel_with_backup(FILE_LEAVE, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])
-        df_travel = read_excel_with_backup(FILE_TRAVEL, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","เรื่อง/กิจกรรม"])[0]
-        df_att    = read_attendance_report()
-        df_staff  = read_excel_from_drive(FILE_STAFF)
-        df_leave, df_travel, df_att = preprocess_dataframes(df_leave, df_travel, df_att)
-        ALL_NAMES = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, df_att)
+    df_leave    = _dc("cache_leave")
+    _leave_fid  = st.session_state.get("_fid_leave")
+    df_travel   = _dc("cache_travel")
+    df_att      = _dc("cache_att")
+    df_staff    = _dc("cache_staff")
+    ALL_NAMES   = get_active_staff(df_staff) or get_all_names_fallback(df_leave, df_travel, df_att)
 
     st.info(f"📂 ข้อมูลการลาปัจจุบัน: **{len(df_leave)} รายการ**  "
             f"{'(file ID: ' + _leave_fid[:8] + '...)' if _leave_fid else '⚠️ ยังไม่มีไฟล์ใน Drive'}")
@@ -3055,11 +3124,10 @@ elif menu == "🕒 บันทึกการลา":
 elif menu == "📈 วันลาคงเหลือ":
     st.markdown('<div class="section-header">📈 สิทธิ์วันลาคงเหลือ</div>', unsafe_allow_html=True)
 
-    with st.spinner("กำลังโหลดข้อมูล..."):
-        df_leave = read_excel_with_backup(FILE_LEAVE, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])[0]
-        df_staff = read_excel_from_drive(FILE_STAFF)
-        df_leave, _, _ = preprocess_dataframes(df_leave, pd.DataFrame(), pd.DataFrame())
-        all_names = get_active_staff(df_staff) or get_all_names_fallback(df_leave, pd.DataFrame(), pd.DataFrame())
+    df_leave = _dc("cache_leave")
+    df_staff = _dc("cache_staff")
+    df_leave, _, _ = preprocess_dataframes(df_leave, pd.DataFrame(), pd.DataFrame())
+    all_names = get_active_staff(df_staff) or get_all_names_fallback(df_leave, pd.DataFrame(), pd.DataFrame())
 
     selected_year = st.selectbox("ปี (พ.ศ.)", list(range(dt.date.today().year + 543, dt.date.today().year + 540, -1)))
     year_ad = selected_year - 543
@@ -3121,8 +3189,8 @@ elif menu == "📈 วันลาคงเหลือ":
 elif menu == "👤 จัดการบุคลากร":
     st.markdown('<div class="section-header">👤 จัดการฐานข้อมูลบุคลากร</div>', unsafe_allow_html=True)
 
-    with st.spinner("กำลังโหลด..."):
-        df_staff, _staff_fid = read_excel_with_backup(FILE_STAFF, dedup_cols=["ชื่อ-สกุล"])
+    df_staff    = _dc("cache_staff")
+    _staff_fid  = st.session_state.get("_fid_staff")
 
     if df_staff.empty:
         df_staff = pd.DataFrame(columns=STAFF_MASTER_COLS)
@@ -3233,7 +3301,7 @@ elif menu == "🔔 กิจกรรมล่าสุด":
     st.markdown('<div class="section-header">🔔 กิจกรรมล่าสุดในระบบ</div>', unsafe_allow_html=True)
 
     with st.spinner("กำลังโหลด..."):
-        df_log = read_excel_from_drive(FILE_NOTIFY)
+        df_log = read_excel_from_drive(FILE_NOTIFY)   # log อ่านตรง ไม่ cache
 
     if df_log.empty:
         st.info("ยังไม่มีกิจกรรมในระบบ กิจกรรมจะถูกบันทึกเมื่อมีการบันทึกการลาหรือไปราชการ")
@@ -3331,6 +3399,7 @@ elif menu == "⚙️ ผู้ดูแลระบบ":
                             if write_excel_to_drive(filename, new_df, known_file_id=known_fid):
                                 st.toast("✅ อัปเดตสำเร็จ", icon="✅")
                                 st.cache_data.clear()
+                                _invalidate_cache()  # โหลด cache ใหม่รอบต่อไป
                     except Exception as e:
                         st.error(f"❌ อ่านไฟล์ไม่ได้: {e}")
 
@@ -3454,6 +3523,7 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
 
                     cleanup_prog.empty()
                     st.cache_data.clear()
+                    _invalidate_cache()  # โหลด cache ใหม่รอบต่อไป
                     log_activity("ล้างไฟล์ Drive", f"ลบ {success_count} ไฟล์ซ้ำใน root", "Admin")
 
                     if fail_count == 0:
@@ -3595,6 +3665,7 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
                                         icon="✅",
                                     )
                                     st.cache_data.clear()
+                                    _invalidate_cache()  # โหลด cache ใหม่รอบต่อไป
                                 else:
                                     status.update(label="❌ บันทึกล้มเหลว", state="error")
                             except Exception as e:
@@ -3679,6 +3750,7 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
                                     log_activity("ลบสแกนนิ้ว", del_ms_label, search_ms_name)
                                     st.toast("✅ ลบรายการสำเร็จ", icon="🗑️")
                                     st.cache_data.clear()
+                                    _invalidate_cache()  # โหลด cache ใหม่รอบต่อไป
 
         # ============================================================
         # 🎌 Tab: วันหยุดพิเศษ
@@ -3814,6 +3886,7 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
                             )
                             st.toast(f"✅ เพิ่ม '{ha_name}' วันที่ {ha_date.strftime('%d/%m/%Y')} สำเร็จ", icon="🎌")
                             st.cache_data.clear()
+                            _invalidate_cache()  # โหลด cache ใหม่รอบต่อไป
                             time.sleep(0.5)
                             st.rerun()
 
@@ -3853,6 +3926,7 @@ line_notify_token = "Token จาก https://notify-bot.line.me/my/"
                                 log_activity("ลบวันหยุดพิเศษ", del_hol_label, "Admin")
                                 st.toast("✅ ลบวันหยุดสำเร็จ", icon="🗑️")
                                 st.cache_data.clear()
+                                _invalidate_cache()  # โหลด cache ใหม่รอบต่อไป
                                 time.sleep(0.5)
                                 st.rerun()
 
