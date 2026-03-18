@@ -1017,65 +1017,271 @@ if menu == "🏠 หน้าหลัก":
 # ===========================
 elif menu == "📊 Dashboard & รายงาน":
     st.markdown('<div class="section-header">📊 Dashboard & วิเคราะห์ข้อมูล</div>', unsafe_allow_html=True)
-    df_att,df_leave,df_staff=_dc("cache_att"),_dc("cache_leave"),_dc("cache_staff")
-    LATE_CUT=dt.time(8,31)
+    df_att        = _dc("cache_att")
+    df_leave      = _dc("cache_leave")
+    df_staff      = _dc("cache_staff")
+    df_travel_all = _dc("cache_travel_all")
+
+    LATE_CUT = dt.time(8, 31)
+
+    # ── คำนวณ KPI ──────────────────────────────────────────────
     def _att_status(row):
-        if pd.to_datetime(row["วันที่"],errors="coerce").weekday()>=5: return "วันหยุด"
-        t_in,t_out=parse_time(row.get("เวลาเข้า","")),parse_time(row.get("เวลาออก",""))
-        if not t_in and not t_out: return "ขาดงาน"
-        if (t_in and not t_out) or (not t_in and t_out) or (t_in==t_out): return "ลืมสแกน"
-        if t_in>=LATE_CUT: return "มาสาย"
+        if pd.to_datetime(row["วันที่"], errors="coerce").weekday() >= 5: return "วันหยุด"
+        t_in  = parse_time(row.get("เวลาเข้า", ""))
+        t_out = parse_time(row.get("เวลาออก",  ""))
+        if not t_in and not t_out:                                      return "ขาดงาน"
+        if (t_in and not t_out) or (not t_in and t_out) or (t_in == t_out): return "ลืมสแกน"
+        if t_in >= LATE_CUT:                                            return "มาสาย"
         return "มาปกติ"
+
     if not df_att.empty:
-        df_att["วันที่"]=pd.to_datetime(df_att["วันที่"],errors="coerce")
-        df_att["เดือน"]=df_att["วันที่"].dt.strftime("%Y-%m")
-        df_att["สถานะสแกน"]=df_att.apply(_att_status,axis=1)
-        df_work=df_att[~df_att["สถานะสแกน"].isin(["วันหยุด"])]
-        total_work=len(df_work)
-        n_ok=len(df_work[df_work["สถานะสแกน"]=="มาปกติ"]); n_late=len(df_work[df_work["สถานะสแกน"]=="มาสาย"])
-        n_absent=len(df_work[df_work["สถานะสแกน"]=="ขาดงาน"]); n_forgot=len(df_work[df_work["สถานะสแกน"]=="ลืมสแกน"])
-        pct_ok=n_ok/total_work*100 if total_work else 0
-    else: total_work=n_ok=n_late=n_absent=n_forgot=0; pct_ok=0.0
-    kc1,kc2,kc3,kc4=st.columns(4)
-    kc1.metric("🗓️ วันทำการรวม",f"{total_work:,}"); kc2.metric("✅ อัตรามาปกติ",f"{pct_ok:.1f}%")
-    kc3.metric("⏰ มาสาย",f"{n_late:,} วัน"); kc4.metric("❌ ขาดงาน",f"{n_absent:,} วัน")
+        df_att = df_att.copy()
+        df_att["วันที่"]       = pd.to_datetime(df_att["วันที่"], errors="coerce")
+        df_att["เดือน"]        = df_att["วันที่"].dt.strftime("%Y-%m")
+        df_att["สถานะสแกน"]   = df_att.apply(_att_status, axis=1)
+        df_work    = df_att[~df_att["สถานะสแกน"].isin(["วันหยุด"])]
+        total_work = len(df_work)
+        n_ok    = len(df_work[df_work["สถานะสแกน"] == "มาปกติ"])
+        n_late  = len(df_work[df_work["สถานะสแกน"] == "มาสาย"])
+        n_absent= len(df_work[df_work["สถานะสแกน"] == "ขาดงาน"])
+        n_forgot= len(df_work[df_work["สถานะสแกน"] == "ลืมสแกน"])
+        pct_ok  = n_ok / total_work * 100 if total_work else 0
+        pct_late= n_late / total_work * 100 if total_work else 0
+    else:
+        total_work = n_ok = n_late = n_absent = n_forgot = 0
+        pct_ok = pct_late = 0.0
+        df_work = pd.DataFrame()
+
+    # ── KPI Cards ──────────────────────────────────────────────
+    kc1, kc2, kc3, kc4 = st.columns(4)
+    kc1.metric("🗓️ วันทำการรวม",  f"{total_work:,}")
+    kc2.metric("✅ อัตรามาปกติ",   f"{pct_ok:.1f}%",   delta=f"{n_ok:,} วัน")
+    kc3.metric("⏰ อัตรามาสาย",    f"{pct_late:.1f}%", delta=f"{n_late:,} วัน",  delta_color="inverse")
+    kc4.metric("❌ อัตราขาดงาน",   f"{n_absent/total_work*100:.1f}%" if total_work else "0%",
+               delta=f"{n_absent:,} วัน", delta_color="inverse")
+
     st.divider()
-    tab_leave,tab_trend,tab_export=st.tabs(["📋 สรุปการลา","📈 แนวโน้ม","📥 Export"])
-    with tab_leave:
-        if not df_leave.empty and "กลุ่มงาน" in df_leave.columns:
-            col1,col2=st.columns(2)
-            with col1:
-                st.subheader("วันลารวมแยกตามกลุ่มงาน (Top 10)")
-                df_c=df_leave.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().nlargest(10).reset_index()
-                st.altair_chart(alt.Chart(df_c).mark_bar(cornerRadiusTopRight=4,cornerRadiusBottomRight=4).encode(x=alt.X("จำนวนวันลา:Q",title="วันลารวม"),y=alt.Y("กลุ่มงาน:N",sort="-x",title=""),color=alt.value("#6366f1"),tooltip=["กลุ่มงาน","จำนวนวันลา"]).properties(height=320),use_container_width=True)
-            with col2:
-                st.subheader("ประเภทการลา (สัดส่วน)")
-                if "ประเภทการลา" in df_leave.columns:
-                    df_pie=df_leave["ประเภทการลา"].value_counts().reset_index(); df_pie.columns=["ประเภท","จำนวนครั้ง"]
-                    st.altair_chart(alt.Chart(df_pie).mark_arc(innerRadius=50).encode(theta=alt.Theta("จำนวนครั้ง:Q"),color=alt.Color("ประเภท:N",legend=alt.Legend(orient="bottom")),tooltip=["ประเภท","จำนวนครั้ง"]).properties(height=280),use_container_width=True)
-        else: st.info("ไม่มีข้อมูลการลา")
+
+    # ── 5 Tabs ─────────────────────────────────────────────────
+    tab_summary, tab_trend, tab_charts, tab_insight, tab_export = st.tabs([
+        "📋 สรุปรายบุคคล", "📈 แนวโน้มรายเดือน", "📊 กราฟ", "🔍 วิเคราะห์", "📥 Export",
+    ])
+
+    # ── Tab 1: สรุปรายบุคคล ───────────────────────────────────
+    with tab_summary:
+        if df_work.empty:
+            st.info("ไม่มีข้อมูลการสแกนนิ้ว")
+        else:
+            # filter เดือน
+            months_avail = sorted(df_att["เดือน"].dropna().unique().tolist())
+            sel_month = st.selectbox("เดือน", months_avail,
+                                     index=len(months_avail)-1 if months_avail else 0,
+                                     key="dash_month")
+            df_m = df_work[df_work["เดือน"] == sel_month] if sel_month else df_work
+
+            # สรุปรายบุคคล
+            summary_rows = []
+            for name, grp in df_m.groupby("ชื่อ-สกุล"):
+                total = len(grp)
+                ok    = len(grp[grp["สถานะสแกน"] == "มาปกติ"])
+                late  = len(grp[grp["สถานะสแกน"] == "มาสาย"])
+                absent= len(grp[grp["สถานะสแกน"] == "ขาดงาน"])
+                forgot= len(grp[grp["สถานะสแกน"] == "ลืมสแกน"])
+                pct   = ok / total * 100 if total else 0
+                if   pct >= 80: badge = "🟢"
+                elif pct >= 60: badge = "🟡"
+                else:           badge = "🔴"
+                summary_rows.append({
+                    "ชื่อ-สกุล":  name,
+                    "วันทำการ":   total,
+                    "มาปกติ":     ok,
+                    "มาสาย":      late,
+                    "ขาดงาน":     absent,
+                    "ลืมสแกน":    forgot,
+                    "% มาปกติ":   round(pct, 1),
+                    "สถานะ":       badge,
+                })
+            if summary_rows:
+                df_sum = pd.DataFrame(summary_rows).sort_values("% มาปกติ", ascending=False)
+                st.dataframe(df_sum, use_container_width=True, height=450)
+                st.caption(f"🟢 ≥ 80%   🟡 60–79%   🔴 < 60%")
+
+    # ── Tab 2: แนวโน้มรายเดือน ────────────────────────────────
     with tab_trend:
-        if not df_att.empty and "เดือน" in df_att.columns:
-            df_monthly=df_work.groupby("เดือน")["สถานะสแกน"].value_counts().unstack(fill_value=0).reset_index() if total_work>0 else pd.DataFrame()
-            if not df_monthly.empty:
-                for col in ["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]:
-                    if col not in df_monthly.columns: df_monthly[col]=0
-                df_monthly["วันรวม"]=df_monthly[["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]].sum(axis=1)
-                df_monthly["% มาปกติ"]=(df_monthly["มาปกติ"]/df_monthly["วันรวม"].replace(0,1)*100).round(1)
-                st.dataframe(df_monthly[["เดือน","มาปกติ","มาสาย","ขาดงาน","ลืมสแกน","วันรวม","% มาปกติ"]].sort_values("เดือน"),use_container_width=True)
-        else: st.info("ไม่มีข้อมูลสแกนนิ้ว")
+        if df_work.empty:
+            st.info("ไม่มีข้อมูลสแกนนิ้ว")
+        else:
+            df_monthly = (df_work.groupby("เดือน")["สถานะสแกน"]
+                          .value_counts().unstack(fill_value=0).reset_index())
+            for col in ["มาปกติ", "มาสาย", "ขาดงาน", "ลืมสแกน"]:
+                if col not in df_monthly.columns: df_monthly[col] = 0
+            df_monthly["วันรวม"]   = df_monthly[["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]].sum(axis=1)
+            df_monthly["% มาปกติ"] = (df_monthly["มาปกติ"] / df_monthly["วันรวม"].replace(0, 1) * 100).round(1)
+            df_monthly = df_monthly.sort_values("เดือน")
+
+            # progress bar inline
+            def _bar(pct):
+                c = "#22c55e" if pct >= 80 else ("#f59e0b" if pct >= 60 else "#ef4444")
+                return f'<div style="background:#e2e8f0;border-radius:4px;height:8px"><div style="width:{min(pct,100):.0f}%;background:{c};height:8px;border-radius:4px"></div></div>'
+
+            st.dataframe(
+                df_monthly[["เดือน","มาปกติ","มาสาย","ขาดงาน","ลืมสแกน","วันรวม","% มาปกติ"]],
+                use_container_width=True, height=400,
+            )
+
+    # ── Tab 3: กราฟ ──────────────────────────────────────────
+    with tab_charts:
+        if df_work.empty:
+            st.info("ไม่มีข้อมูล")
+        else:
+            df_monthly_c = (df_work.groupby("เดือน")["สถานะสแกน"]
+                            .value_counts().unstack(fill_value=0).reset_index())
+            for col in ["มาปกติ", "มาสาย", "ขาดงาน", "ลืมสแกน"]:
+                if col not in df_monthly_c.columns: df_monthly_c[col] = 0
+            df_monthly_c["วันรวม"]    = df_monthly_c[["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]].sum(axis=1)
+            df_monthly_c["% มาปกติ"]  = (df_monthly_c["มาปกติ"] / df_monthly_c["วันรวม"].replace(0, 1) * 100).round(1)
+            df_monthly_c = df_monthly_c.sort_values("เดือน")
+
+            col_c1, col_c2 = st.columns(2)
+
+            # กราฟ Line: % มาปกติ รายเดือน + เส้นเกณฑ์ 80%
+            with col_c1:
+                st.subheader("📈 % มาปกติ รายเดือน")
+                line = alt.Chart(df_monthly_c).mark_line(point=True, color="#6366f1", strokeWidth=2.5).encode(
+                    x=alt.X("เดือน:O", title="เดือน"),
+                    y=alt.Y("% มาปกติ:Q", title="% มาปกติ", scale=alt.Scale(domain=[0, 100])),
+                    tooltip=["เดือน", "% มาปกติ", "มาปกติ", "วันรวม"],
+                )
+                rule = alt.Chart(pd.DataFrame({"y": [80]})).mark_rule(
+                    color="red", strokeDash=[6, 3], strokeWidth=1.5
+                ).encode(y="y:Q")
+                st.altair_chart((line + rule).properties(height=280), use_container_width=True)
+
+            # กราฟ Stacked Bar: สัดส่วนสถานะรายเดือน
+            with col_c2:
+                st.subheader("📊 สัดส่วนสถานะรายเดือน")
+                df_melt = df_monthly_c.melt(
+                    id_vars="เดือน",
+                    value_vars=["มาปกติ", "มาสาย", "ขาดงาน", "ลืมสแกน"],
+                    var_name="สถานะ", value_name="จำนวน",
+                )
+                bar = alt.Chart(df_melt).mark_bar().encode(
+                    x=alt.X("เดือน:O", title="เดือน"),
+                    y=alt.Y("จำนวน:Q", title="จำนวนวัน"),
+                    color=alt.Color("สถานะ:N", scale=alt.Scale(
+                        domain=["มาปกติ", "มาสาย", "ขาดงาน", "ลืมสแกน"],
+                        range=["#22c55e", "#f59e0b", "#ef4444", "#a78bfa"],
+                    )),
+                    tooltip=["เดือน", "สถานะ", "จำนวน"],
+                ).properties(height=280)
+                st.altair_chart(bar, use_container_width=True)
+
+            # กราฟ Bar: วันลาแยกตามกลุ่มงาน
+            if not df_leave.empty and "กลุ่มงาน" in df_leave.columns:
+                st.subheader("📋 วันลารวมแยกตามกลุ่มงาน (Top 10)")
+                df_lc = df_leave.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().nlargest(10).reset_index()
+                st.altair_chart(
+                    alt.Chart(df_lc).mark_bar(
+                        cornerRadiusTopRight=4, cornerRadiusBottomRight=4
+                    ).encode(
+                        x=alt.X("จำนวนวันลา:Q", title="วันลารวม"),
+                        y=alt.Y("กลุ่มงาน:N", sort="-x", title=""),
+                        color=alt.value("#6366f1"),
+                        tooltip=["กลุ่มงาน", "จำนวนวันลา"],
+                    ).properties(height=320),
+                    use_container_width=True,
+                )
+
+    # ── Tab 4: วิเคราะห์ ──────────────────────────────────────
+    with tab_insight:
+        st.subheader("🔍 ข้อวิเคราะห์จากข้อมูลจริง")
+        if df_work.empty:
+            st.info("ไม่มีข้อมูลเพียงพอสำหรับการวิเคราะห์")
+        else:
+            insights = []
+
+            # 1. อัตรามาปกติรวม
+            insights.append(f"📌 อัตรามาปกติรวมทั้งหมด **{pct_ok:.1f}%** จากทั้งหมด {total_work:,} วันทำการ"
+                             + (" (✅ ผ่านเกณฑ์ 80%)" if pct_ok >= 80 else " (⚠️ ต่ำกว่าเกณฑ์ 80%)"))
+
+            # 2. บุคลากรมาสายมากสุด
+            if "ชื่อ-สกุล" in df_work.columns:
+                late_by_name = df_work[df_work["สถานะสแกน"] == "มาสาย"].groupby("ชื่อ-สกุล").size().nlargest(3)
+                if not late_by_name.empty:
+                    top_late = ", ".join([f"{n} ({c} วัน)" for n, c in late_by_name.items()])
+                    insights.append(f"⏰ บุคลากรมาสายสูงสุด 3 อันดับ: {top_late}")
+
+            # 3. บุคลากรขาดงานมากสุด
+            absent_by_name = df_work[df_work["สถานะสแกน"] == "ขาดงาน"].groupby("ชื่อ-สกุล").size().nlargest(3)
+            if not absent_by_name.empty:
+                top_abs = ", ".join([f"{n} ({c} วัน)" for n, c in absent_by_name.items()])
+                insights.append(f"❌ บุคลากรขาดงานสูงสุด 3 อันดับ: {top_abs}")
+
+            # 4. เดือนที่มาปกติน้อยสุด
+            if "เดือน" in df_work.columns:
+                m_ok = df_work[df_work["สถานะสแกน"] == "มาปกติ"].groupby("เดือน").size()
+                m_total = df_work.groupby("เดือน").size()
+                m_pct = (m_ok / m_total * 100).dropna()
+                if not m_pct.empty:
+                    worst_m = m_pct.idxmin()
+                    insights.append(f"📅 เดือนที่มาปกติน้อยที่สุด: **{worst_m}** ({m_pct[worst_m]:.1f}%)")
+                    best_m = m_pct.idxmax()
+                    insights.append(f"📅 เดือนที่มาปกติมากที่สุด: **{best_m}** ({m_pct[best_m]:.1f}%)")
+
+            # 5. ลืมสแกนนิ้ว
+            if n_forgot > 0:
+                insights.append(f"🟣 มีการลืมสแกนนิ้ว **{n_forgot:,} ครั้ง** ({n_forgot/total_work*100:.1f}% ของวันทำการ)")
+
+            # 6. ประเภทลาที่ใช้มากสุด
+            if not df_leave.empty and "ประเภทการลา" in df_leave.columns:
+                top_leave = df_leave["ประเภทการลา"].value_counts().head(1)
+                if not top_leave.empty:
+                    insights.append(f"🗂️ ประเภทการลาที่ใช้มากที่สุด: **{top_leave.index[0]}** ({top_leave.iloc[0]:,} ครั้ง)")
+
+            # 7. สัดส่วนขาดงาน warning
+            if total_work > 0 and n_absent / total_work > 0.1:
+                insights.append(f"🚨 สัดส่วนขาดงาน **{n_absent/total_work*100:.1f}%** สูงเกิน 10% ควรตรวจสอบ")
+
+            for ins in insights:
+                st.markdown(f"- {ins}")
+
+    # ── Tab 5: Export ─────────────────────────────────────────
     with tab_export:
-        today=dt.date.today()
-        month_opts=pd.date_range(f"{today.year-2}-01-01",f"{today.year+1}-12-31",freq="MS").strftime("%Y-%m").tolist()
-        export_month=st.selectbox("เลือกเดือน",month_opts,index=month_opts.index(today.strftime("%Y-%m")) if today.strftime("%Y-%m") in month_opts else 0)
-        if st.button("📊 สร้างรายงาน Excel",type="primary"):
-            m_start=pd.to_datetime(export_month+"-01"); m_end=m_start+pd.offsets.MonthEnd(0)
-            df_lm=df_leave[(df_leave["วันที่เริ่ม"]>=m_start)&(df_leave["วันที่เริ่ม"]<=m_end)] if not df_leave.empty else pd.DataFrame()
-            output=io.BytesIO()
-            with pd.ExcelWriter(output,engine="xlsxwriter") as writer:
-                pd.DataFrame({"รายการ":["การลา (ครั้ง)","วันลารวม"],"จำนวน":[len(df_lm),int(df_lm["จำนวนวันลา"].sum()) if not df_lm.empty else 0]}).to_excel(writer,sheet_name="สรุป",index=False)
-                if not df_lm.empty: df_lm.to_excel(writer,sheet_name="การลา",index=False)
-            st.download_button("⬇️ ดาวน์โหลด",output.getvalue(),f"HR_Report_{export_month}.xlsx",mime=EXCEL_MIME)
+        today = dt.date.today()
+        month_opts = pd.date_range(f"{today.year-2}-01-01", f"{today.year+1}-12-31",
+                                   freq="MS").strftime("%Y-%m").tolist()
+        export_month = st.selectbox(
+            "เลือกเดือน", month_opts,
+            index=month_opts.index(today.strftime("%Y-%m")) if today.strftime("%Y-%m") in month_opts else 0,
+            key="export_month_sel",
+        )
+        if st.button("📊 สร้างรายงาน Excel", type="primary", key="btn_export"):
+            m_start = pd.to_datetime(export_month + "-01")
+            m_end   = m_start + pd.offsets.MonthEnd(0)
+            df_lm   = df_leave[(df_leave["วันที่เริ่ม"] >= m_start) & (df_leave["วันที่เริ่ม"] <= m_end)] \
+                      if not df_leave.empty else pd.DataFrame()
+            df_wm   = df_work[df_work["เดือน"] == export_month] if not df_work.empty else pd.DataFrame()
+            output  = io.BytesIO()
+            with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+                pd.DataFrame({
+                    "รายการ": ["การลา (ครั้ง)", "วันลารวม", "วันทำการ", "มาปกติ", "มาสาย", "ขาดงาน"],
+                    "จำนวน": [
+                        len(df_lm),
+                        int(df_lm["จำนวนวันลา"].sum()) if not df_lm.empty else 0,
+                        len(df_wm),
+                        len(df_wm[df_wm["สถานะสแกน"] == "มาปกติ"]) if not df_wm.empty else 0,
+                        len(df_wm[df_wm["สถานะสแกน"] == "มาสาย"])  if not df_wm.empty else 0,
+                        len(df_wm[df_wm["สถานะสแกน"] == "ขาดงาน"]) if not df_wm.empty else 0,
+                    ],
+                }).to_excel(writer, sheet_name="สรุป", index=False)
+                if not df_lm.empty: df_lm.to_excel(writer, sheet_name="การลา", index=False)
+                if not df_wm.empty: df_wm.to_excel(writer, sheet_name="การมาปฏิบัติงาน", index=False)
+            st.download_button(
+                "⬇️ ดาวน์โหลดรายงาน",
+                output.getvalue(),
+                f"HR_Report_{export_month}.xlsx",
+                mime=EXCEL_MIME,
+            )
 
 # ===========================
 # 📅 ตรวจสอบการปฏิบัติงาน
