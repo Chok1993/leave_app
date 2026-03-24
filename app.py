@@ -39,36 +39,239 @@ logger = logging.getLogger(__name__)
 # ===========================
 CUSTOM_CSS = """
 <style>
-html, body, [class*="css"] { font-family: 'Sarabun', sans-serif; }
+/* ── Google Font ───────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap');
+
+/* ── Global dark background ────────────────────────────── */
+html, body, [class*="css"], .stApp {
+    font-family: 'Sarabun', sans-serif !important;
+    background-color: #0f172a !important;
+    color: #e2e8f0 !important;
+}
+
+/* Main content area */
+.block-container {
+    background-color: #0f172a !important;
+    padding-top: 1.5rem !important;
+}
+
+/* ── Sidebar dark ───────────────────────────────────────── */
 section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%); color: white;
+    background: linear-gradient(180deg, #020617 0%, #0f172a 100%) !important;
+    border-right: 1px solid #1e293b;
 }
-section[data-testid="stSidebar"] * { color: white !important; }
-section[data-testid="stSidebar"] .stRadio > label { 
-    background: rgba(255,255,255,0.05); border-radius: 8px;
-    padding: 6px 12px; margin: 2px 0; display: block; transition: background 0.2s;
+section[data-testid="stSidebar"] * { color: #cbd5e1 !important; }
+section[data-testid="stSidebar"] .stRadio > label {
+    background: rgba(255,255,255,0.04); border-radius: 8px;
+    padding: 7px 12px; margin: 2px 0; display: block;
+    transition: background 0.2s; border: 1px solid transparent;
 }
-section[data-testid="stSidebar"] .stRadio > label:hover { background: rgba(255,255,255,0.15); }
+section[data-testid="stSidebar"] .stRadio > label:hover {
+    background: rgba(99,102,241,0.2); border-color: #6366f1;
+}
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+    color: #94a3b8 !important;
+}
+
+/* ── Tabs ───────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {
+    background: #1e293b !important;
+    border-radius: 10px;
+    padding: 4px;
+    gap: 4px;
+}
+.stTabs [data-baseweb="tab"] {
+    background: transparent !important;
+    color: #94a3b8 !important;
+    border-radius: 8px !important;
+    padding: 6px 16px !important;
+    font-weight: 600;
+    border: none !important;
+}
+.stTabs [aria-selected="true"] {
+    background: #6366f1 !important;
+    color: #ffffff !important;
+}
+.stTabs [data-baseweb="tab-panel"] {
+    background: transparent !important;
+    padding-top: 1rem;
+}
+
+/* ── Cards / Metrics ────────────────────────────────────── */
 div[data-testid="metric-container"] {
-    background: white; border-radius: 12px; padding: 16px;
-    border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    background: #1e293b !important;
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid #334155;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
 }
-.badge-green  { background:#dcfce7; color:#166534; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
-.badge-yellow { background:#fef9c3; color:#854d0e; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
-.badge-red    { background:#fee2e2; color:#991b1b; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
-.badge-blue   { background:#dbeafe; color:#1e40af; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
-.badge-gray   { background:#f1f5f9; color:#475569; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
+div[data-testid="metric-container"] label { color: #94a3b8 !important; }
+div[data-testid="metric-container"] [data-testid="stMetricValue"] {
+    color: #f1f5f9 !important;
+    font-weight: 700;
+}
+
+/* ── DataFrames ─────────────────────────────────────────── */
+[data-testid="stDataFrame"] {
+    border-radius: 10px !important;
+    overflow: hidden;
+    border: 1px solid #334155 !important;
+}
+[data-testid="stDataFrame"] th {
+    background: #1e293b !important;
+    color: #a5b4fc !important;
+    font-weight: 700;
+}
+[data-testid="stDataFrame"] td {
+    background: #0f172a !important;
+    color: #cbd5e1 !important;
+    border-color: #1e293b !important;
+}
+[data-testid="stDataFrame"] tr:hover td {
+    background: #1e293b !important;
+}
+
+/* ── Inputs / Selectbox / Multiselect ───────────────────── */
+.stSelectbox > div, .stMultiSelect > div,
+.stTextInput > div, .stTextArea > div,
+.stDateInput > div, .stTimeInput > div {
+    background: #1e293b !important;
+    border-color: #334155 !important;
+    color: #e2e8f0 !important;
+    border-radius: 8px !important;
+}
+.stSelectbox label, .stMultiSelect label,
+.stTextInput label, .stTextArea label {
+    color: #94a3b8 !important;
+}
+[data-baseweb="select"] *, [data-baseweb="input"] * {
+    background: #1e293b !important;
+    color: #e2e8f0 !important;
+}
+[data-baseweb="tag"] {
+    background: #4f46e5 !important;
+    color: white !important;
+}
+
+/* ── Buttons ────────────────────────────────────────────── */
+.stButton > button {
+    background: #1e293b !important;
+    color: #cbd5e1 !important;
+    border: 1px solid #334155 !important;
+    border-radius: 8px !important;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+.stButton > button:hover {
+    background: #334155 !important;
+    border-color: #6366f1 !important;
+    color: #a5b4fc !important;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #4f46e5, #6366f1) !important;
+    color: white !important;
+    border: none !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: linear-gradient(135deg, #4338ca, #4f46e5) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(99,102,241,0.4);
+}
+
+/* ── Download button ────────────────────────────────────── */
+.stDownloadButton > button {
+    background: #164e63 !important;
+    color: #67e8f9 !important;
+    border: 1px solid #0e7490 !important;
+    border-radius: 8px !important;
+}
+.stDownloadButton > button:hover {
+    background: #0e7490 !important;
+}
+
+/* ── Progress bar ───────────────────────────────────────── */
+.stProgress > div > div {
+    background: linear-gradient(90deg, #4f46e5, #818cf8) !important;
+}
+
+/* ── Alerts / Info / Warning / Error ────────────────────── */
+.stAlert { border-radius: 10px !important; }
+[data-testid="stAlert"][data-baseweb="notification"] {
+    background: #1e293b !important;
+    border-color: #334155 !important;
+    color: #e2e8f0 !important;
+}
+
+/* ── Divider ─────────────────────────────────────────────── */
+hr { border-color: #1e293b !important; }
+
+/* ── Section header gradient text ───────────────────────── */
 .section-header {
-    background: linear-gradient(90deg, #0ea5e9, #6366f1);
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background: linear-gradient(90deg, #38bdf8, #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
     font-size: 1.4rem; font-weight: 700; margin-bottom: 1rem;
 }
-.activity-item { padding: 10px 14px; border-left: 3px solid #6366f1; background: #f8fafc; border-radius: 0 8px 8px 0; margin-bottom: 8px; font-size: 0.87rem; }
-.quota-bar-wrap { background:#e2e8f0; border-radius:999px; height:10px; margin:4px 0; }
+
+/* ── Activity item ──────────────────────────────────────── */
+.activity-item {
+    padding: 10px 14px;
+    border-left: 3px solid #6366f1;
+    background: #1e293b;
+    border-radius: 0 8px 8px 0;
+    margin-bottom: 8px;
+    font-size: 0.87rem;
+    color: #cbd5e1;
+}
+
+/* ── Quota bar ──────────────────────────────────────────── */
+.quota-bar-wrap { background:#1e293b; border-radius:999px; height:10px; margin:4px 0; border: 1px solid #334155; }
 .quota-bar-fill { height:10px; border-radius:999px; transition: width 0.4s; }
-@media (max-width: 768px) { div[data-testid="metric-container"] { margin-bottom: 8px; } .block-container { padding: 1rem !important; } }
+
+/* ── Badges ─────────────────────────────────────────────── */
+.badge-green  { background:#14532d; color:#86efac; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
+.badge-yellow { background:#713f12; color:#fde68a; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
+.badge-red    { background:#7f1d1d; color:#fca5a5; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
+.badge-blue   { background:#1e3a5f; color:#93c5fd; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
+.badge-gray   { background:#1e293b; color:#94a3b8; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
+
+/* ── Leave legend boxes ─────────────────────────────────── */
+.legend-box {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 6px;
+    font-size: 0.82rem; font-weight: 700;
+    margin: 3px; border: 1px solid rgba(255,255,255,0.1);
+}
+.leg-ok     { background:#14532d; color:#86efac; }
+.leg-hol    { background:#374151; color:#d1d5db; }
+.leg-sick   { background:#7f1d1d; color:#fca5a5; }
+.leg-pers   { background:#713f12; color:#fde68a; }
+.leg-vac    { background:#1e3a5f; color:#93c5fd; }
+.leg-travel { background:#14532d; color:#6ee7b7; }
+.leg-late   { background:#92400e; color:#fcd34d; }
+.leg-absent { background:#450a0a; color:#f87171; }
+.leg-forgot { background:#2e1065; color:#c4b5fd; }
+.leg-slash  { background:#1e293b; color:#475569; }
+
+/* ── File uploader ──────────────────────────────────────── */
+[data-testid="stFileUploader"] {
+    background: #1e293b !important;
+    border: 1px dashed #334155 !important;
+    border-radius: 10px !important;
+}
+
+/* ── Caption / small text ───────────────────────────────── */
+.stCaption, small { color: #64748b !important; }
+
+/* ── Spinner ────────────────────────────────────────────── */
+.stSpinner > div { border-top-color: #6366f1 !important; }
+
+/* ── Responsive ─────────────────────────────────────────── */
+@media (max-width: 768px) {
+    div[data-testid="metric-container"] { margin-bottom: 8px; }
+    .block-container { padding: 0.75rem !important; }
+}
 </style>
-<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
 """
 
 # ===========================
@@ -1156,6 +1359,22 @@ def _dc(key:str,default=None):
 def _invalidate_cache() -> None:
     st.session_state.pop("_data_loaded_at",None)
 
+def _safe_df(df) -> pd.DataFrame:
+    """
+    แปลง category dtype → string ก่อนส่งให้ st.dataframe
+    ป้องกัน pyarrow.lib.ArrowTypeError เมื่อ category มี mixed types
+    (เกิดจาก _optimize_dtypes ที่แปลง string columns เป็น category)
+    """
+    if df is None or (hasattr(df, "empty") and df.empty):
+        return df
+    if not isinstance(df, pd.DataFrame):  # styler object → ไม่แปลง
+        return df
+    df2 = df.copy()
+    for col in df2.columns:
+        if hasattr(df2[col], "cat"):  # is CategoricalDtype
+            df2[col] = df2[col].astype(str).replace("nan", "")
+    return df2
+
 # ===========================
 # 🖥️ Sidebar (init ก่อน)
 # ===========================
@@ -1737,7 +1956,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 person_info = row_s.iloc[0].to_dict()
 
         st.markdown(f"""
-<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 16px;margin-bottom:10px">
+<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 16px;margin-bottom:10px;color:#e2e8f0">
 <b>ทะเบียนคุมวันลา &nbsp; ปีงบประมาณ พ.ศ. {reg_year}</b><br>
 ชื่อ &nbsp;<b>{reg_person}</b> &nbsp;&nbsp;
 ตำแหน่ง &nbsp;<b>{person_info.get("ตำแหน่ง","—")}</b> &nbsp;&nbsp;
@@ -1789,22 +2008,22 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                         use_container_width=True, height=500,
                     )
 
-                    # คำอธิบายสัญลักษณ์
+                    # คำอธิบายสัญลักษณ์ — dark theme legend boxes
                     st.markdown("""
-<div style="font-size:0.9em;margin-top:5px;padding:12px;border-radius:8px;
-            background-color:#f8fafc;border:1px solid #e2e8f0;line-height:1.8">
-<b>คำอธิบายสัญลักษณ์:</b><br>
-<span style="color:#2e7d32;font-weight:bold">✓ มาปกติ</span> &nbsp;|&nbsp;
-<span style="color:#bdbdbd;font-weight:bold">X วันหยุด (ส.-อา./นักขัตฤกษ์)</span> &nbsp;|&nbsp;
-<span style="color:#1976D2;font-weight:bold">ป ลาป่วย</span> &nbsp;|&nbsp;
-<span style="color:#9C27B0;font-weight:bold">ก ลากิจ</span> &nbsp;|&nbsp;
-<span style="color:#00897B;font-weight:bold">พ ลาพักผ่อน</span> &nbsp;|&nbsp;
-<span style="color:#3F51B5;font-weight:bold">ร ไปราชการ</span> &nbsp;|&nbsp;
-<span style="color:#795548;font-weight:bold">ล ลาอื่นๆ</span> &nbsp;|&nbsp;
-<span style="color:#d84315;font-weight:bold">ส มาสาย</span> &nbsp;|&nbsp;
-<span style="color:#d84315;font-weight:bold">ข ขาดราชการ</span> &nbsp;|&nbsp;
-<span style="color:#d84315;font-weight:bold">- ลืมสแกนนิ้ว</span> &nbsp;|&nbsp;
-<span style="color:#e0e0e0;font-weight:bold">/ ไม่มีวันนี้ในเดือน</span>
+<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px 18px;margin-top:8px">
+<div style="color:#94a3b8;font-size:0.82rem;font-weight:700;margin-bottom:8px;letter-spacing:0.05em">คำอธิบายสัญลักษณ์</div>
+<div style="display:flex;flex-wrap:wrap;gap:6px">
+  <span class="legend-box leg-ok">✓ มาปกติ</span>
+  <span class="legend-box leg-hol">X วันหยุด</span>
+  <span class="legend-box leg-sick">ป ลาป่วย</span>
+  <span class="legend-box leg-pers">ก ลากิจ</span>
+  <span class="legend-box leg-vac">พ ลาพักผ่อน</span>
+  <span class="legend-box leg-travel">ร ไปราชการ</span>
+  <span class="legend-box leg-late">ส มาสาย</span>
+  <span class="legend-box leg-absent">ข ขาดราชการ</span>
+  <span class="legend-box leg-forgot">- ลืมสแกนนิ้ว</span>
+  <span class="legend-box leg-slash">/ ไม่มีวันนี้ในเดือน</span>
+</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -2062,30 +2281,53 @@ elif menu == "⚙️ ผู้ดูแลระบบ":
         _fid_leave=st.session_state.get("_fid_leave"); _fid_travel=st.session_state.get("_fid_travel"); _fid_staff=st.session_state.get("_fid_staff")
         _fid_map={FILE_LEAVE:_fid_leave,FILE_TRAVEL:_fid_travel,FILE_STAFF:_fid_staff,FILE_ATTEND:None}
         tab1,tab2,tab3,tab4,tab5,tab6,tab_hol=st.tabs(["📂 ไฟล์ลา","📂 ไฟล์ราชการ","📂 ไฟล์สแกนนิ้ว","📂 ไฟล์บุคลากร","🔧 ตั้งค่า","👆 คีย์สแกน","🎌 วันหยุด"])
-        def admin_file_panel(df,filename,tab_obj):
+        def _df_for_display(df: pd.DataFrame) -> pd.DataFrame:
+            """
+            แปลง category dtype → string ก่อนส่งให้ st.dataframe
+            ป้องกัน pyarrow.lib.ArrowTypeError เมื่อ category มี mixed types
+            """
+            if df.empty:
+                return df
+            df2 = df.copy()
+            for col in df2.columns:
+                if hasattr(df2[col], "cat"):  # is category
+                    df2[col] = df2[col].astype(str).replace("nan", "")
+            return df2
+
+        def admin_file_panel(df, filename, tab_obj):
             with tab_obj:
                 st.subheader(f"ไฟล์: {filename}")
                 st.caption(f"File ID: `{_fid_map.get(filename,'—')}`")
-                if df.empty: st.warning("⚠️ ไม่มีข้อมูล")
+                if df.empty:
+                    st.warning("⚠️ ไม่มีข้อมูล")
                 else:
-                    st.dataframe(df.head(20),use_container_width=True)
+                    st.dataframe(_df_for_display(df.head(20)), use_container_width=True)
                     st.caption(f"ทั้งหมด {len(df)} แถว | {len(df.columns)} คอลัมน์")
-                    col_d1,col_d2=st.columns(2)
+                    col_d1, col_d2 = st.columns(2)
                     with col_d1:
-                        buf=io.BytesIO()
-                        with pd.ExcelWriter(buf,engine="xlsxwriter") as w: df.to_excel(w,index=False)
-                        st.download_button("⬇️ Excel",buf.getvalue(),filename,use_container_width=True)
-                    with col_d2: st.download_button("⬇️ CSV",df.to_csv(index=False).encode("utf-8-sig"),filename.replace(".xlsx",".csv"),"text/csv",use_container_width=True)
-                st.divider(); st.warning("⚠️ การอัปโหลดจะเขียนทับข้อมูลเดิมทั้งหมด")
-                up=st.file_uploader(f"อัปโหลดทับ {filename}",type=["xlsx"],key=f"up_{filename}")
+                        buf = io.BytesIO()
+                        with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+                            df.to_excel(w, index=False)
+                        st.download_button("⬇️ Excel", buf.getvalue(), filename, use_container_width=True)
+                    with col_d2:
+                        st.download_button("⬇️ CSV", df.to_csv(index=False).encode("utf-8-sig"),
+                                           filename.replace(".xlsx",".csv"), "text/csv", use_container_width=True)
+                st.divider()
+                st.warning("⚠️ การอัปโหลดจะเขียนทับข้อมูลเดิมทั้งหมด")
+                up = st.file_uploader(f"อัปโหลดทับ {filename}", type=["xlsx"], key=f"up_{filename}")
                 if up:
                     try:
-                        new_df=pd.read_excel(up); st.info(f"{len(new_df)} แถว, {len(new_df.columns)} คอลัมน์"); st.dataframe(new_df.head(3))
-                        if st.button("✅ ยืนยันอัปโหลด",key=f"confirm_{filename}",type="primary"):
-                            backup_excel(filename,df)
-                            if write_excel_to_drive(filename,new_df,known_file_id=_fid_map.get(filename)):
-                                st.toast("✅ อัปเดตสำเร็จ",icon="✅"); time.sleep(1); st.rerun()
-                    except Exception as e: st.error(f"❌ อ่านไฟล์ไม่ได้: {e}")
+                        new_df = pd.read_excel(up)
+                        st.info(f"{len(new_df)} แถว, {len(new_df.columns)} คอลัมน์")
+                        st.dataframe(new_df.head(3))
+                        if st.button("✅ ยืนยันอัปโหลด", key=f"confirm_{filename}", type="primary"):
+                            backup_excel(filename, df)
+                            if write_excel_to_drive(filename, new_df, known_file_id=_fid_map.get(filename)):
+                                st.toast("✅ อัปเดตสำเร็จ", icon="✅")
+                                time.sleep(1)
+                                st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ อ่านไฟล์ไม่ได้: {e}")
         admin_file_panel(df_leave,FILE_LEAVE,tab1); admin_file_panel(df_travel,FILE_TRAVEL,tab2)
         admin_file_panel(read_attendance_report(),FILE_ATTEND,tab3); admin_file_panel(df_staff,FILE_STAFF,tab4)
         with tab5:
