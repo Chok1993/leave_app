@@ -122,25 +122,35 @@ _NON_TRAVEL_FILES={FILE_ATTEND,FILE_LEAVE,FILE_STAFF,FILE_NOTIFY,FILE_HOLIDAYS,F
 # ===========================
 # 🔒 Drive Thread-Safety
 # ===========================
+# httplib2 ไม่ Thread-safe — ใช้ thread-local แยก service ต่อ thread
+# ป้องกัน "malloc: double linked list corrupted" จาก shared connection
 _thread_local  = threading.local()
 _DRIVE_LOCK    = threading.Lock()
 _DRIVE_LOCK_TIMEOUT = 15
+
+# Reconnect cooldown — ป้องกัน reconnect storm
 _LAST_RECONNECT_TIME: float = 0.0
-_RECONNECT_COOLDOWN = 10.0  
+_RECONNECT_COOLDOWN = 10.0  # วินาที
+
+# Circuit breaker global — ถ้า Drive down ชั่วคราว ไม่ loop ซ้ำ
 _DRIVE_CIRCUIT_OPEN = False
 _DRIVE_CIRCUIT_RESET_AT: float = 0.0
-_DRIVE_CIRCUIT_TIMEOUT = 30.0  
+_DRIVE_CIRCUIT_TIMEOUT = 30.0  # เปิด circuit 30 วิ แล้วลองใหม่
 
 # ===========================
 # ☁️ Google Drive Service
 # ===========================
 def _build_drive_service():
+    """สร้าง Drive service ใหม่ 1 ตัวต่อ 1 thread"""
     import httplib2
     import google_auth_httplib2
+
     creds = service_account.Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
         scopes=["https://www.googleapis.com/auth/drive"],
     )
+    # google_auth_httplib2.AuthorizedHttp รองรับ google-auth ใหม่
+    # (ไม่ใช้ creds.authorize() ซึ่งเป็น oauth2client เก่า)
     authorized_http = google_auth_httplib2.AuthorizedHttp(
         creds, http=httplib2.Http(timeout=20)
     )
@@ -149,18 +159,27 @@ def _build_drive_service():
     return svc
 
 def get_drive_service():
+    """
+    คืน Drive service แบบ thread-local
+    - แต่ละ thread มี connection แยกกัน → ไม่ชนกัน
+    - circuit breaker: fail 3 ครั้ง → error แทน crash
+    """
     svc = getattr(_thread_local, "service", None)
     if svc is not None:
         return svc
+
     fail_count = getattr(_thread_local, "fail_count", 0)
     if fail_count >= 3:
+        # main thread แสดง error ใน UI, background thread แค่ raise
         if threading.current_thread() is threading.main_thread():
             st.error("❌ เชื่อมต่อ Google Drive ไม่สำเร็จหลายครั้ง กรุณา Refresh หน้าเว็บ")
             st.stop()
         raise RuntimeError("Drive: circuit breaker open")
+
     try:
         _thread_local.service = _build_drive_service()
         _thread_local.fail_count = 0
+        # reset circuit breaker เมื่อ connect สำเร็จ
         _DRIVE_CIRCUIT_OPEN = False
         return _thread_local.service
     except Exception as e:
@@ -172,8 +191,11 @@ def get_drive_service():
         raise
 
 def _drop_drive_service() -> None:
+    """ทิ้ง Drive service ของ thread นี้ — สร้างใหม่รอบต่อไป"""
     global _LAST_RECONNECT_TIME
     _thread_local.service = None
+
+    # cooldown ป้องกัน reconnect storm
     now = time.time()
     if now - _LAST_RECONNECT_TIME < _RECONNECT_COOLDOWN:
         wait = _RECONNECT_COOLDOWN - (now - _LAST_RECONNECT_TIME)
@@ -183,11 +205,19 @@ def _drop_drive_service() -> None:
     logger.warning("Drive service dropped — will reconnect on next call")
 
 def _drive_execute(request, retries: int = 2):
+    """
+    Execute Drive API request พร้อม retry
+    - ใช้ thread-local service (ไม่แชร์ข้าม thread)
+    - Lock เฉพาะตอน reconnect ป้องกัน race condition
+    - Circuit breaker: ถ้า Drive down ชั่วคราว ไม่ loop ซ้ำ
+    """
     global _DRIVE_CIRCUIT_OPEN, _DRIVE_CIRCUIT_RESET_AT
+    # ตรวจ circuit breaker
     if _DRIVE_CIRCUIT_OPEN:
         now = time.time()
         if now < _DRIVE_CIRCUIT_RESET_AT:
             raise RuntimeError(f"Drive circuit open — retry in {_DRIVE_CIRCUIT_RESET_AT - now:.0f}s")
+        # ครบเวลาแล้ว → ลองเปิดใหม่
         _DRIVE_CIRCUIT_OPEN = False
         logger.info("Drive circuit breaker: half-open (trying again)")
     _TE = (
@@ -212,7 +242,7 @@ def _drive_execute(request, retries: int = 2):
             raise
         except _TE as e:
             logger.warning("Drive transport error (%s) — reconnect & retry %d/%d", type(e).__name__, attempt+1, retries)
-            with _DRIVE_LOCK:         
+            with _DRIVE_LOCK:          # lock เฉพาะ drop+reconnect
                 _drop_drive_service()
             time.sleep(2 ** attempt)
             last_exc = e
@@ -227,6 +257,7 @@ def _drive_execute(request, retries: int = 2):
                 continue
             raise
 
+    # เปิด circuit breaker เมื่อ retry หมด
     _DRIVE_CIRCUIT_OPEN     = True
     _DRIVE_CIRCUIT_RESET_AT = time.time() + _DRIVE_CIRCUIT_TIMEOUT
     logger.error("Drive circuit opened — will reset in %.0fs", _DRIVE_CIRCUIT_TIMEOUT)
@@ -246,6 +277,7 @@ def get_file_id(filename: str, parent_id: str = FOLDER_ID) -> Optional[str]:
 
 def get_or_create_folder(folder_name: str, parent_id: str) -> Optional[str]:
     try:
+        svc = get_drive_service()
         res = _drive_execute(lambda: get_drive_service().files().list(q=f"name='{folder_name}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false", fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True))
         folders = res.get("files", [])
         if folders: return folders[0]["id"]
@@ -256,7 +288,8 @@ def get_or_create_folder(folder_name: str, parent_id: str) -> Optional[str]:
 @st.cache_data(ttl=900, show_spinner=False)
 def _read_file_by_id(file_id: str) -> pd.DataFrame:
     try:
-        req = get_drive_service().files().get_media(fileId=file_id, supportsAllDrives=True)
+        svc = get_drive_service()
+        req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
         fh = io.BytesIO(); dl = MediaIoBaseDownload(fh, req); done = False
         while not done: _, done = dl.next_chunk()
         fh.seek(0); return pd.read_excel(fh, engine="openpyxl")
@@ -300,11 +333,12 @@ def write_excel_to_drive(filename: str, df: pd.DataFrame, known_file_id: Optiona
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="xlsxwriter") as w: df.to_excel(w, index=False)
         buf.seek(0); media = MediaIoBaseUpload(buf, mimetype=EXCEL_MIME, resumable=False)
-        fid = known_file_id or get_file_id(filename)
+        svc = get_drive_service(); fid = known_file_id or get_file_id(filename)
         if fid: _drive_execute(lambda: get_drive_service().files().update(fileId=fid, media_body=media, supportsAllDrives=True))
         else: _drive_execute(lambda: get_drive_service().files().create(body={"name":filename,"parents":[FOLDER_ID]}, media_body=media, supportsAllDrives=True, fields="id"))
+        # ⚡ ล้างเฉพาะ @st.cache_data ของไฟล์นั้น ไม่ล้างทั้งหมด
         read_excel_from_drive.clear(filename)
-        _invalidate_cache() 
+        _invalidate_cache()  # บังคับโหลด session cache ใหม่รอบต่อไป
         return True
     except Exception as e:
         logger.error("write_excel_to_drive(%s): %s", filename, e)
@@ -312,26 +346,43 @@ def write_excel_to_drive(filename: str, df: pd.DataFrame, known_file_id: Optiona
         return False
 
 def backup_excel(filename: str, df: pd.DataFrame) -> None:
-    if df.empty: return
+    """
+    สำรองไฟล์ — รันหลัง write เสร็จแล้ว (synchronous แต่ silent)
+    ไม่ใช้ background thread เพราะ thread แยกใช้ httplib2 connection
+    ร่วมกับ main thread ทำให้เกิด heap corruption
+    """
+    if df.empty:
+        return
     try:
         fid = get_file_id(filename)
-        if not fid: return
+        if not fid:
+            return
         bak_name    = f"BAK_{filename}"
         backup_root = get_or_create_folder(BACKUP_FOLDER_NAME, FOLDER_ID)
-        if not backup_root: return
+        if not backup_root:
+            return
         bak_sub = get_or_create_folder(bak_name, backup_root)
-        if not bak_sub: return
+        if not bak_sub:
+            return
         existing = get_file_id(bak_name, bak_sub)
         if existing:
-            try: _drive_execute(lambda: get_drive_service().files().delete(fileId=existing, supportsAllDrives=True))
-            except Exception: pass
-        _drive_execute(lambda: get_drive_service().files().copy(fileId=fid, body={"name": bak_name, "parents": [bak_sub]}, supportsAllDrives=True))
+            try:
+                _drive_execute(lambda: get_drive_service().files().delete(
+                    fileId=existing, supportsAllDrives=True))
+            except Exception:
+                pass
+        _drive_execute(lambda: get_drive_service().files().copy(
+            fileId=fid,
+            body={"name": bak_name, "parents": [bak_sub]},
+            supportsAllDrives=True,
+        ))
+        logger.info("backup_excel: %s → BAK สำเร็จ", filename)
     except Exception as e:
         logger.warning("backup_excel(%s): %s", filename, e)
 
 def upload_pdf_to_drive(uploaded_file, new_filename: str, folder_id: str) -> str:
     try:
-        meta = {"name":new_filename,"parents":[folder_id]}
+        svc = get_drive_service(); meta = {"name":new_filename,"parents":[folder_id]}
         media = MediaIoBaseUpload(io.BytesIO(uploaded_file.getvalue()), mimetype="application/pdf", resumable=True)
         created = _drive_execute(lambda: get_drive_service().files().create(body=meta, media_body=media, supportsAllDrives=True, fields="id,webViewLink"))
         return created.get("webViewLink", "-")
@@ -359,8 +410,11 @@ def _normalize_date(val) -> Optional[dt.date]:
     if isinstance(val, dt.date): return val
     try:
         s = str(val).strip()
-        if re.match(r'^\d{4}-\d{2}-\d{2}', s): ts = pd.to_datetime(s[:19], errors="coerce")
-        else: ts = pd.to_datetime(s, dayfirst=True, errors="coerce")
+        # ISO format (YYYY-MM-DD) → dayfirst=False ป้องกัน UserWarning
+        if re.match(r'^\d{4}-\d{2}-\d{2}', s):
+            ts = pd.to_datetime(s[:19], errors="coerce")
+        else:
+            ts = pd.to_datetime(s, dayfirst=True, errors="coerce")
         return None if pd.isna(ts) else ts.date()
     except Exception: return None
 
@@ -492,35 +546,85 @@ def parse_time(val) -> Optional[dt.time]:
 # ===========================
 @st.cache_data(ttl=900)
 def read_attendance_report() -> pd.DataFrame:
+    """
+    อ่านไฟล์ attendance_report.xlsx อย่างละเอียด รองรับหลายรูปแบบ:
+
+    รูปแบบ A — แต่ละแถวคือ 1 การสแกน (ชื่อ | วันที่ | เวลาเข้า | เวลาออก)
+    รูปแบบ B — แต่ละแถวมีชื่อซ้ำหลายวัน (ชื่อ | วันที่ | เวลา | เวลา)
+    รูปแบบ C — ไฟล์เครื่องสแกน ZKTeco/Fingertec: No | ชื่อ | Department | Date | Time | ...
+    รูปแบบ D — ชื่อ column ภาษาอังกฤษ: Name/Employee | Date | Check In | Check Out
+    """
     fid = get_file_id(FILE_ATTEND)
-    if not fid: return pd.DataFrame()
+    if not fid:
+        logger.warning("read_attendance_report: ไม่พบไฟล์ %s ใน Drive", FILE_ATTEND)
+        return pd.DataFrame()
+
     try:
         req  = get_drive_service().files().get_media(fileId=fid, supportsAllDrives=True)
-        fh   = io.BytesIO(); dl = MediaIoBaseDownload(fh, req); done = False
-        while not done: _, done = dl.next_chunk()
+        fh   = io.BytesIO()
+        dl   = MediaIoBaseDownload(fh, req)
+        done = False
+        while not done:
+            _, done = dl.next_chunk()
         fh.seek(0)
+        # อ่าน dtype=str ทั้งหมดเพื่อป้องกัน pandas auto-cast วันที่/เวลาผิด
         df_raw = pd.read_excel(fh, engine="openpyxl", header=0, dtype=str)
-    except Exception as e: logger.error("read_attendance_report: %s", e); return pd.DataFrame()
+    except Exception as e:
+        logger.error("read_attendance_report: %s", e)
+        return pd.DataFrame()
 
-    if df_raw.empty: return pd.DataFrame()
+    if df_raw.empty:
+        logger.warning("read_attendance_report: ไฟล์ว่างเปล่า")
+        return pd.DataFrame()
+
+    # ── normalize column names ──────────────────────────────────────────
     df_raw.columns = [str(c).strip() for c in df_raw.columns]
     raw_cols = df_raw.columns.tolist()
+    logger.info("read_attendance_report: columns = %s", raw_cols)
 
-    NAME_CANDIDATES = ["ชื่อ-สกุล","ชื่อพนักงาน","ชื่อ","Name","Employee Name","employee","name","fullname","FullName","EMPLOYEE","NAME","ชื่อ - สกุล","ชื่อ-นามสกุล"]
-    DATE_CANDIDATES = ["วันที่","date","Date","DATE","วันที่เข้างาน","Check Date","checkdate","AttendDate","วัน/เดือน/ปี","Attendance Date"]
-    IN_CANDIDATES = ["เวลาเข้า","เข้า","check_in","Check In","CheckIn","checkin","เวลาเข้างาน","Time In","time_in","IN","In","เข้างาน","First Check","First In","Scan In"]
-    OUT_CANDIDATES = ["เวลาออก","ออก","check_out","Check Out","CheckOut","checkout","เวลาออกงาน","Time Out","time_out","OUT","Out","ออกงาน","Last Check","Last Out","Scan Out"]
+    # ── fuzzy column matching ───────────────────────────────────────────
+    # ชื่อพนักงาน
+    NAME_CANDIDATES = [
+        "ชื่อ-สกุล","ชื่อพนักงาน","ชื่อ","Name","Employee Name",
+        "employee","name","fullname","FullName","EMPLOYEE","NAME",
+        "ชื่อ - สกุล","ชื่อ-นามสกุล",
+    ]
+    # วันที่
+    DATE_CANDIDATES = [
+        "วันที่","date","Date","DATE","วันที่เข้างาน","Check Date",
+        "checkdate","AttendDate","วัน/เดือน/ปี","Attendance Date",
+    ]
+    # เวลาเข้า
+    IN_CANDIDATES = [
+        "เวลาเข้า","เข้า","check_in","Check In","CheckIn","checkin",
+        "เวลาเข้างาน","Time In","time_in","IN","In","เข้างาน",
+        "First Check","First In","Scan In",
+    ]
+    # เวลาออก
+    OUT_CANDIDATES = [
+        "เวลาออก","ออก","check_out","Check Out","CheckOut","checkout",
+        "เวลาออกงาน","Time Out","time_out","OUT","Out","ออกงาน",
+        "Last Check","Last Out","Scan Out",
+    ]
+    # หมายเหตุ
     NOTE_CANDIDATES = ["หมายเหตุ","note","Note","NOTE","Remark","remark","REMARK"]
 
     def _find_col(candidates: list[str]) -> Optional[str]:
+        """ค้นหา column จาก candidates list (exact → lower → contains)"""
+        # exact match
         for c in candidates:
-            if c in raw_cols: return c
+            if c in raw_cols:
+                return c
+        # case-insensitive
         raw_lower = {col.lower(): col for col in raw_cols}
         for c in candidates:
-            if c.lower() in raw_lower: return raw_lower[c.lower()]
+            if c.lower() in raw_lower:
+                return raw_lower[c.lower()]
+        # contains match (สำหรับชื่อ column ยาว เช่น "เวลาเข้างาน (HH:MM)")
         for c in candidates:
             for col in raw_cols:
-                if c.lower() in col.lower(): return col
+                if c.lower() in col.lower():
+                    return col
         return None
 
     COL_NAME = _find_col(NAME_CANDIDATES)
@@ -529,52 +633,108 @@ def read_attendance_report() -> pd.DataFrame:
     COL_OUT  = _find_col(OUT_CANDIDATES)
     COL_NOTE = _find_col(NOTE_CANDIDATES)
 
+    logger.info(
+        "read_attendance_report: mapping — ชื่อ=%s วันที่=%s เข้า=%s ออก=%s หมายเหตุ=%s",
+        COL_NAME, COL_DATE, COL_IN, COL_OUT, COL_NOTE,
+    )
+
+    # ── ถ้าหา column หลักไม่เจอ ให้ลอง detect แบบ positional ──────────
+    # บางไฟล์เครื่องสแกนมี header แปลก เช่น แถวแรกไม่ใช่ header จริง
     if COL_DATE is None or COL_NAME is None:
+        logger.warning("read_attendance_report: ไม่พบ column มาตรฐาน — ลอง multi-header scan")
+        # ลองอ่านซ้ำโดยข้าม 1-3 แถวแรก
         for skip in range(1, 5):
             try:
                 fh.seek(0)
                 df_try = pd.read_excel(fh, engine="openpyxl", header=skip, dtype=str)
                 df_try.columns = [str(c).strip() for c in df_try.columns]
                 if _find_col(DATE_CANDIDATES) or _find_col(NAME_CANDIDATES):
-                    df_raw  = df_try; raw_cols = df_raw.columns.tolist()
-                    COL_NAME = _find_col(NAME_CANDIDATES); COL_DATE = _find_col(DATE_CANDIDATES)
-                    COL_IN   = _find_col(IN_CANDIDATES); COL_OUT  = _find_col(OUT_CANDIDATES)
+                    df_raw  = df_try
+                    raw_cols = df_raw.columns.tolist()
+                    COL_NAME = _find_col(NAME_CANDIDATES)
+                    COL_DATE = _find_col(DATE_CANDIDATES)
+                    COL_IN   = _find_col(IN_CANDIDATES)
+                    COL_OUT  = _find_col(OUT_CANDIDATES)
                     COL_NOTE = _find_col(NOTE_CANDIDATES)
+                    logger.info("read_attendance_report: ใช้ header row=%d → %s", skip, raw_cols[:6])
                     break
-            except Exception: continue
+            except Exception:
+                continue
 
-    if COL_DATE is None: return pd.DataFrame()
+    if COL_DATE is None:
+        logger.error(
+            "read_attendance_report: ไม่พบ column วันที่เลย (columns=%s)", raw_cols
+        )
+        return pd.DataFrame()
 
+    # ── กรณีไม่มี column ชื่อ — ลองดู column แรกหรือ column ที่มีชื่อบุคคล ──
     if COL_NAME is None:
+        # ลองหา column ที่ค่าเริ่มต้นด้วยคำนำหน้าชื่อ
         prefix_re = re.compile(r"^(นาย|นาง(?:สาว)?|Mr|Mrs|Ms|Miss)", re.IGNORECASE)
         for col in raw_cols:
             sample = df_raw[col].dropna().astype(str).head(20)
             if sample.str.match(prefix_re).sum() >= 3:
-                COL_NAME = col; break
-        if COL_NAME is None and raw_cols: COL_NAME = raw_cols[0]
+                COL_NAME = col
+                logger.info("read_attendance_report: detect ชื่อจาก value pattern → '%s'", col)
+                break
+        if COL_NAME is None and raw_cols:
+            COL_NAME = raw_cols[0]  # fallback: column แรก
+            logger.warning("read_attendance_report: ใช้ column แรก '%s' เป็นชื่อ", COL_NAME)
 
-    rows_out = []; skipped  = 0
+    # ── build output rows ────────────────────────────────────────────────
+    rows_out = []
+    skipped  = 0
+
     for idx, row in df_raw.iterrows():
+        # ชื่อ
         name = _normalize_name(row.get(COL_NAME, "")) if COL_NAME else ""
-        if not name: skipped += 1; continue
+        if not name:
+            skipped += 1
+            continue
+
+        # วันที่ — ลอง _normalize_date ก่อน แล้ว fallback _parse_date_flex
         raw_date = row.get(COL_DATE, "")
         date_val = _normalize_date(raw_date)
         if date_val is None:
             ts = _parse_date_flex(raw_date)
             date_val = ts.date() if ts is not None and not pd.isna(ts) else None
-        if date_val is None: skipped += 1; continue
+        if date_val is None:
+            skipped += 1
+            continue
+
+        # เวลา
         time_in  = _normalize_time_value(row.get(COL_IN,  "")) if COL_IN  else ""
         time_out = _normalize_time_value(row.get(COL_OUT, "")) if COL_OUT else ""
-        note = str(row.get(COL_NOTE, "") or "").strip() if COL_NOTE else ""
-        rows_out.append({"ชื่อ-สกุล": name, "วันที่": pd.Timestamp(date_val), "เวลาเข้า": time_in, "เวลาออก": time_out, "หมายเหตุ": note})
 
-    if not rows_out: return pd.DataFrame(columns=["ชื่อ-สกุล","วันที่","เวลาเข้า","เวลาออก","หมายเหตุ","เดือน"])
+        # กรณีเวลาเข้า=ออก เหมือนกัน (เครื่องสแกนบางรุ่น record ครั้งเดียว)
+        # ไม่ต้องแก้ไขที่นี่ — logic ใน _att_status จะจัดการเอง
+
+        note = str(row.get(COL_NOTE, "") or "").strip() if COL_NOTE else ""
+
+        rows_out.append({
+            "ชื่อ-สกุล": name,
+            "วันที่":     pd.Timestamp(date_val),
+            "เวลาเข้า":   time_in,
+            "เวลาออก":    time_out,
+            "หมายเหตุ":   note,
+        })
+
+    logger.info(
+        "read_attendance_report: อ่านได้ %d แถว, ข้าม %d แถว (ชื่อ/วันที่ว่าง)",
+        len(rows_out), skipped,
+    )
+
+    if not rows_out:
+        return pd.DataFrame(columns=["ชื่อ-สกุล","วันที่","เวลาเข้า","เวลาออก","หมายเหตุ","เดือน"])
+
     df_out = pd.DataFrame(rows_out)
     df_out["วันที่"] = pd.to_datetime(df_out["วันที่"], errors="coerce").dt.normalize()
     df_out["เดือน"]  = df_out["วันที่"].dt.strftime("%Y-%m")
     df_out = df_out.dropna(subset=["วันที่"])
     df_out = df_out[df_out["ชื่อ-สกุล"] != ""].reset_index(drop=True)
 
+    # ── dedup: ถ้า 1 คน 1 วัน มีหลายแถว ให้เอาเวลาเข้าแรกสุด + ออกหลังสุด ──
+    # (เครื่องบางรุ่น record ทุกครั้งที่แตะ)
     df_out["_time_in_dt"]  = df_out["เวลาเข้า"].apply(parse_time)
     df_out["_time_out_dt"] = df_out["เวลาออก"].apply(parse_time)
 
@@ -584,10 +744,29 @@ def read_attendance_report() -> pd.DataFrame:
         t_in_str  = min(times_in).strftime("%H:%M")  if times_in  else ""
         t_out_str = max(times_out).strftime("%H:%M") if times_out else ""
         note_combined = " | ".join(filter(None, grp["หมายเหตุ"].unique().tolist()))
-        return pd.Series({"เวลาเข้า": t_in_str, "เวลาออก":  t_out_str, "หมายเหตุ": note_combined, "เดือน": grp["เดือน"].iloc[0]})
+        return pd.Series({
+            "เวลาเข้า": t_in_str,
+            "เวลาออก":  t_out_str,
+            "หมายเหตุ": note_combined,
+            "เดือน":    grp["เดือน"].iloc[0],
+        })
 
-    df_out = df_out.groupby(["ชื่อ-สกุล", "วันที่"], as_index=False).apply(_agg_scans).reset_index(drop=True)
-    return df_out.sort_values(["ชื่อ-สกุล","วันที่"]).reset_index(drop=True)
+    n_before = len(df_out)
+    df_out = (
+        df_out
+        .groupby(["ชื่อ-สกุล", "วันที่"], as_index=False)
+        .apply(_agg_scans)
+        .reset_index(drop=True)
+    )
+    n_after = len(df_out)
+    if n_before != n_after:
+        logger.info(
+            "read_attendance_report: รวม multi-scan %d → %d แถว (dedup)",
+            n_before, n_after,
+        )
+
+    df_out = df_out.sort_values(["ชื่อ-สกุล","วันที่"]).reset_index(drop=True)
+    return df_out
 
 # ===========================
 # 🚗 Travel Data
@@ -876,52 +1055,99 @@ def _cache_is_fresh() -> bool:
     return ts is not None and (dt.datetime.now()-ts).total_seconds()<_CACHE_TTL_SEC
 
 def _load_all_data_to_cache(force: bool = False) -> None:
-    if not force and _cache_is_fresh(): return
+    """
+    โหลดข้อมูลทั้งหมดลง session_state
+    - ครั้งแรก: โหลดทุกไฟล์ แสดง progress รายไฟล์
+    - ครั้งต่อไป (cache ยังสด): return ทันที ไม่ยิง Drive เลย
+    - force=True: โหลดใหม่ทุกไฟล์
+    """
+    if not force and _cache_is_fresh():
+        return
+
+    # ถ้า force → ล้าง @st.cache_data ของทุกฟังก์ชันอ่านไฟล์
     if force:
-        for fn in [read_excel_from_drive, read_attendance_report, load_all_travel, load_manual_scans, _read_file_by_id]:
-            try: fn.clear()
-            except Exception: pass
+        for fn in [read_excel_from_drive, read_attendance_report,
+                   load_all_travel, load_manual_scans, _read_file_by_id]:
+            try:
+                fn.clear()
+            except Exception:
+                pass
+
     ph = st.empty()
+
+    # ── 1. ไฟล์หลัก 3 ไฟล์ (เบา) ─────────────────────────────
     ph.caption("⏳ กำลังโหลด leave_report...")
-    df_leave, _fid_leave = read_excel_with_backup(FILE_LEAVE, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])
+    df_leave, _fid_leave = read_excel_with_backup(
+        FILE_LEAVE, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","ประเภทการลา"])
+
     ph.caption("⏳ กำลังโหลด travel_report...")
-    df_travel, _fid_travel = read_excel_with_backup(FILE_TRAVEL, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","เรื่อง/กิจกรรม"])
+    df_travel, _fid_travel = read_excel_with_backup(
+        FILE_TRAVEL, dedup_cols=["ชื่อ-สกุล","วันที่เริ่ม","เรื่อง/กิจกรรม"])
+
     ph.caption("⏳ กำลังโหลด staff_master...")
-    df_staff, _fid_staff = read_excel_with_backup(FILE_STAFF, dedup_cols=["ชื่อ-สกุล"])
+    df_staff, _fid_staff = read_excel_with_backup(
+        FILE_STAFF, dedup_cols=["ชื่อ-สกุล"])
+
+    # ── 2. ไฟล์หนัก (attendance + manual + travel_all) ───────
     ph.caption("⏳ กำลังโหลดข้อมูลสแกนนิ้ว...")
-    df_att = read_attendance_report()
+    df_att    = read_attendance_report()
+
     ph.caption("⏳ กำลังโหลดข้อมูลสแกนนิ้ว (manual)...")
     df_manual = load_manual_scans()
+
     ph.caption("⏳ กำลังโหลดข้อมูลไปราชการทั้งหมด...")
     df_travel_all = load_all_travel()
+
+    # ── 3. Preprocess ─────────────────────────────────────────
     ph.caption("⏳ กำลังประมวลผลข้อมูล...")
     df_leave, df_travel, df_att = preprocess_dataframes(df_leave, df_travel, df_att)
-    _, df_travel_all, _ = preprocess_dataframes(pd.DataFrame(), df_travel_all, pd.DataFrame())
+    _, df_travel_all, _         = preprocess_dataframes(pd.DataFrame(), df_travel_all, pd.DataFrame())
     df_att = merge_attendance_with_manual(df_att, df_manual)
+
+    # ── 4. บันทึกลง session_state ครบทุกตัว ──────────────────
     st.session_state.update({
-        "cache_leave": df_leave, "cache_travel": df_travel, "cache_travel_all": df_travel_all,
-        "cache_att": df_att, "cache_staff": df_staff, "cache_manual": df_manual,
-        "_fid_leave": _fid_leave, "_fid_travel": _fid_travel, "_fid_staff": _fid_staff,
-        "_data_loaded_at": dt.datetime.now(),
+        "cache_leave":       df_leave,
+        "cache_travel":      df_travel,
+        "cache_travel_all":  df_travel_all,
+        "cache_att":         df_att,
+        "cache_staff":       df_staff,
+        "cache_manual":      df_manual,
+        "_fid_leave":        _fid_leave,
+        "_fid_travel":       _fid_travel,
+        "_fid_staff":        _fid_staff,
+        "_data_loaded_at":   dt.datetime.now(),
     })
+
+    # ── dtype optimization: ลด RAM 30-50% ────────────────────
     def _optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+        """แปลง string columns เป็น category เพื่อลด memory"""
         if df.empty: return df
         for col in df.select_dtypes(include=['object']).columns:
-            if df[col].nunique() / max(len(df), 1) < 0.5:
+            # category เหมาะกับ column ที่มีค่าซ้ำมาก
+            if df[col].nunique() / max(len(df), 1) < 0.5:  # category threshold
                 try: df[col] = df[col].astype('category')
                 except Exception: pass
         return df
-    df_leave = _optimize_dtypes(df_leave)
-    df_travel = _optimize_dtypes(df_travel)
-    df_staff = _optimize_dtypes(df_staff)
+
+    df_leave      = _optimize_dtypes(df_leave)
+    df_travel     = _optimize_dtypes(df_travel)
+    df_staff      = _optimize_dtypes(df_staff)
     df_travel_all = _optimize_dtypes(df_travel_all)
+
+    # attendance ใหญ่มาก — optimize เฉพาะ string cols
     for col in ["ชื่อ-สกุล", "เดือน", "สถานะสแกน", "_source"]:
         if col in df_att.columns:
             try: df_att[col] = df_att[col].astype('category')
             except Exception: pass
+
+    # ล้าง memory หลังโหลดข้อมูลขนาดใหญ่
     gc.collect()
+
     ph.empty()
-    logger.info("Cache loaded: leave=%d travel=%d att=%d staff=%d travel_all=%d", len(df_leave), len(df_travel), len(df_att), len(df_staff), len(df_travel_all))
+    logger.info(
+        "Cache loaded: leave=%d travel=%d att=%d staff=%d travel_all=%d",
+        len(df_leave), len(df_travel), len(df_att), len(df_staff), len(df_travel_all),
+    )
 
 def _dc(key:str,default=None):
     val=st.session_state.get(key,default)
@@ -948,11 +1174,13 @@ with st.sidebar:
         _load_all_data_to_cache(force=True); st.rerun()
     st.caption(f"v3.0 | {dt.date.today().strftime('%d/%m/%Y')}")
 
+# ✅ FIX: เรียก cache หลัง sidebar init ครบแล้ว
+# ตรวจ session_state ก่อน — ป้องกัน health check timeout ตอน startup
 if "cache_leave" not in st.session_state:
     with st.spinner("⏳ โหลดข้อมูลเริ่มต้นระบบ..."):
         _load_all_data_to_cache()
 else:
-    _load_all_data_to_cache()
+    _load_all_data_to_cache()  # ถ้ามีแล้ว จะ return ทันทีถ้า cache ยังสด
 
 # ===========================
 # 🏠 หน้าหลัก
@@ -970,7 +1198,7 @@ if menu == "🏠 หน้าหลัก":
     col_news,col_feat=st.columns([2,1])
     with col_news:
         st.subheader("🆕 อัปเดต v3.0 (Optimized)")
-        st.markdown("""| ฟีเจอร์ | สถานะ |\n|--------|------|\n| ⚡ O(1) Dictionary Lookup | ✅ |\n| 🗄️ DataCache โหลดครั้งเดียว | ✅ |\n| 🔒 Thread-safe Drive Service | ✅ |\n| 📅 ทะเบียนคุมวันลา Matrix | ✅ |""")
+        st.markdown("""| ฟีเจอร์ | สถานะ |\n|--------|------|\n| ⚡ O(1) Dictionary Lookup | ✅ |\n| 🗄️ DataCache โหลดครั้งเดียว | ✅ |\n| 🔒 Thread-safe Drive Service | ✅ |\n| 📅 วันที่ทุกรูปแบบ (พ.ศ./ค.ศ.) | ✅ |""")
     with col_feat:
         st.subheader("⚙️ สถานะการเชื่อมต่อ")
         st.markdown(f"LINE Notify: {'🟢 เชื่อมต่อแล้ว' if st.secrets.get('line_notify_token','') else '🔴 ยังไม่ตั้งค่า'}")
@@ -989,13 +1217,14 @@ elif menu == "📊 Dashboard & รายงาน":
 
     LATE_CUT = dt.time(8, 31)
 
+    # ── คำนวณ KPI ──────────────────────────────────────────────
     def _att_status(row):
         if pd.to_datetime(row["วันที่"], errors="coerce").weekday() >= 5: return "วันหยุด"
         t_in  = parse_time(row.get("เวลาเข้า", ""))
         t_out = parse_time(row.get("เวลาออก",  ""))
-        if not t_in and not t_out: return "ขาดงาน"
+        if not t_in and not t_out:                                      return "ขาดงาน"
         if (t_in and not t_out) or (not t_in and t_out) or (t_in == t_out): return "ลืมสแกน"
-        if t_in >= LATE_CUT: return "มาสาย"
+        if t_in >= LATE_CUT:                                            return "มาสาย"
         return "มาปกติ"
 
     if not df_att.empty:
@@ -1016,106 +1245,236 @@ elif menu == "📊 Dashboard & รายงาน":
         pct_ok = pct_late = 0.0
         df_work = pd.DataFrame()
 
+    # ── KPI Cards ──────────────────────────────────────────────
     kc1, kc2, kc3, kc4 = st.columns(4)
     kc1.metric("🗓️ วันทำการรวม",  f"{total_work:,}")
     kc2.metric("✅ อัตรามาปกติ",   f"{pct_ok:.1f}%",   delta=f"{n_ok:,} วัน")
     kc3.metric("⏰ อัตรามาสาย",    f"{pct_late:.1f}%", delta=f"{n_late:,} วัน",  delta_color="inverse")
-    kc4.metric("❌ อัตราขาดงาน",   f"{n_absent/total_work*100:.1f}%" if total_work else "0%", delta=f"{n_absent:,} วัน", delta_color="inverse")
+    kc4.metric("❌ อัตราขาดงาน",   f"{n_absent/total_work*100:.1f}%" if total_work else "0%",
+               delta=f"{n_absent:,} วัน", delta_color="inverse")
 
     st.divider()
+
+    # ── 5 Tabs ─────────────────────────────────────────────────
     tab_summary, tab_trend, tab_charts, tab_insight, tab_export = st.tabs([
         "📋 สรุปรายบุคคล", "📈 แนวโน้มรายเดือน", "📊 กราฟ", "🔍 วิเคราะห์", "📥 Export",
     ])
 
+    # ── Tab 1: สรุปรายบุคคล ───────────────────────────────────
     with tab_summary:
         if df_work.empty:
             st.info("ไม่มีข้อมูลการสแกนนิ้ว")
         else:
+            # filter เดือน
             months_avail = sorted(df_att["เดือน"].dropna().unique().tolist())
-            sel_month = st.selectbox("เดือน", months_avail, index=len(months_avail)-1 if months_avail else 0, key="dash_month")
+            sel_month = st.selectbox("เดือน", months_avail,
+                                     index=len(months_avail)-1 if months_avail else 0,
+                                     key="dash_month")
             df_m = df_work[df_work["เดือน"] == sel_month] if sel_month else df_work
+
+            # สรุปรายบุคคล
             summary_rows = []
             for name, grp in df_m.groupby("ชื่อ-สกุล"):
-                total = len(grp); ok = len(grp[grp["สถานะสแกน"] == "มาปกติ"]); late = len(grp[grp["สถานะสแกน"] == "มาสาย"])
-                absent = len(grp[grp["สถานะสแกน"] == "ขาดงาน"]); forgot = len(grp[grp["สถานะสแกน"] == "ลืมสแกน"])
-                pct = ok / total * 100 if total else 0
-                badge = "🟢" if pct >= 80 else ("🟡" if pct >= 60 else "🔴")
-                summary_rows.append({"ชื่อ-สกุล": name, "วันทำการ": total, "มาปกติ": ok, "มาสาย": late, "ขาดงาน": absent, "ลืมสแกน": forgot, "% มาปกติ": round(pct, 1), "สถานะ": badge})
+                total = len(grp)
+                ok    = len(grp[grp["สถานะสแกน"] == "มาปกติ"])
+                late  = len(grp[grp["สถานะสแกน"] == "มาสาย"])
+                absent= len(grp[grp["สถานะสแกน"] == "ขาดงาน"])
+                forgot= len(grp[grp["สถานะสแกน"] == "ลืมสแกน"])
+                pct   = ok / total * 100 if total else 0
+                if   pct >= 80: badge = "🟢"
+                elif pct >= 60: badge = "🟡"
+                else:           badge = "🔴"
+                summary_rows.append({
+                    "ชื่อ-สกุล":  name,
+                    "วันทำการ":   total,
+                    "มาปกติ":     ok,
+                    "มาสาย":      late,
+                    "ขาดงาน":     absent,
+                    "ลืมสแกน":    forgot,
+                    "% มาปกติ":   round(pct, 1),
+                    "สถานะ":       badge,
+                })
             if summary_rows:
-                st.dataframe(pd.DataFrame(summary_rows).sort_values("% มาปกติ", ascending=False), use_container_width=True, height=450)
-                st.caption("🟢 ≥ 80%   🟡 60–79%   🔴 < 60%")
+                df_sum = pd.DataFrame(summary_rows).sort_values("% มาปกติ", ascending=False)
+                st.dataframe(df_sum, use_container_width=True, height=450)
+                st.caption(f"🟢 ≥ 80%   🟡 60–79%   🔴 < 60%")
 
+    # ── Tab 2: แนวโน้มรายเดือน ────────────────────────────────
     with tab_trend:
-        if df_work.empty: st.info("ไม่มีข้อมูลสแกนนิ้ว")
+        if df_work.empty:
+            st.info("ไม่มีข้อมูลสแกนนิ้ว")
         else:
-            df_monthly = df_work.groupby("เดือน")["สถานะสแกน"].value_counts().unstack(fill_value=0).reset_index()
+            df_monthly = (df_work.groupby("เดือน")["สถานะสแกน"]
+                          .value_counts().unstack(fill_value=0).reset_index())
             for col in ["มาปกติ", "มาสาย", "ขาดงาน", "ลืมสแกน"]:
                 if col not in df_monthly.columns: df_monthly[col] = 0
             df_monthly["วันรวม"]   = df_monthly[["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]].sum(axis=1)
             df_monthly["% มาปกติ"] = (df_monthly["มาปกติ"] / df_monthly["วันรวม"].replace(0, 1) * 100).round(1)
-            st.dataframe(df_monthly.sort_values("เดือน")[["เดือน","มาปกติ","มาสาย","ขาดงาน","ลืมสแกน","วันรวม","% มาปกติ"]], use_container_width=True, height=400)
+            df_monthly = df_monthly.sort_values("เดือน")
 
+            # progress bar inline
+            def _bar(pct):
+                c = "#22c55e" if pct >= 80 else ("#f59e0b" if pct >= 60 else "#ef4444")
+                return f'<div style="background:#e2e8f0;border-radius:4px;height:8px"><div style="width:{min(pct,100):.0f}%;background:{c};height:8px;border-radius:4px"></div></div>'
+
+            st.dataframe(
+                df_monthly[["เดือน","มาปกติ","มาสาย","ขาดงาน","ลืมสแกน","วันรวม","% มาปกติ"]],
+                use_container_width=True, height=400,
+            )
+
+    # ── Tab 3: กราฟ ──────────────────────────────────────────
     with tab_charts:
-        if df_work.empty: st.info("ไม่มีข้อมูล")
+        if df_work.empty:
+            st.info("ไม่มีข้อมูล")
         else:
-            df_monthly_c = df_work.groupby("เดือน")["สถานะสแกน"].value_counts().unstack(fill_value=0).reset_index()
+            df_monthly_c = (df_work.groupby("เดือน")["สถานะสแกน"]
+                            .value_counts().unstack(fill_value=0).reset_index())
             for col in ["มาปกติ", "มาสาย", "ขาดงาน", "ลืมสแกน"]:
                 if col not in df_monthly_c.columns: df_monthly_c[col] = 0
-            df_monthly_c["วันรวม"] = df_monthly_c[["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]].sum(axis=1)
-            df_monthly_c["% มาปกติ"] = (df_monthly_c["มาปกติ"] / df_monthly_c["วันรวม"].replace(0, 1) * 100).round(1)
+            df_monthly_c["วันรวม"]    = df_monthly_c[["มาปกติ","มาสาย","ขาดงาน","ลืมสแกน"]].sum(axis=1)
+            df_monthly_c["% มาปกติ"]  = (df_monthly_c["มาปกติ"] / df_monthly_c["วันรวม"].replace(0, 1) * 100).round(1)
             df_monthly_c = df_monthly_c.sort_values("เดือน")
+
             col_c1, col_c2 = st.columns(2)
+
+            # กราฟ Line: % มาปกติ รายเดือน + เส้นเกณฑ์ 80%
             with col_c1:
                 st.subheader("📈 % มาปกติ รายเดือน")
-                line = alt.Chart(df_monthly_c).mark_line(point=True, color="#6366f1", strokeWidth=2.5).encode(x=alt.X("เดือน:O", title="เดือน"), y=alt.Y("% มาปกติ:Q", title="% มาปกติ", scale=alt.Scale(domain=[0, 100])), tooltip=["เดือน", "% มาปกติ", "มาปกติ", "วันรวม"])
-                rule = alt.Chart(pd.DataFrame({"y": [80]})).mark_rule(color="red", strokeDash=[6, 3], strokeWidth=1.5).encode(y="y:Q")
+                line = alt.Chart(df_monthly_c).mark_line(point=True, color="#6366f1", strokeWidth=2.5).encode(
+                    x=alt.X("เดือน:O", title="เดือน"),
+                    y=alt.Y("% มาปกติ:Q", title="% มาปกติ", scale=alt.Scale(domain=[0, 100])),
+                    tooltip=["เดือน", "% มาปกติ", "มาปกติ", "วันรวม"],
+                )
+                rule = alt.Chart(pd.DataFrame({"y": [80]})).mark_rule(
+                    color="red", strokeDash=[6, 3], strokeWidth=1.5
+                ).encode(y="y:Q")
                 st.altair_chart((line + rule).properties(height=280), use_container_width=True)
+
+            # กราฟ Stacked Bar: สัดส่วนสถานะรายเดือน
             with col_c2:
                 st.subheader("📊 สัดส่วนสถานะรายเดือน")
-                df_melt = df_monthly_c.melt(id_vars="เดือน", value_vars=["มาปกติ", "มาสาย", "ขาดงาน", "ลืมสแกน"], var_name="สถานะ", value_name="จำนวน")
-                bar = alt.Chart(df_melt).mark_bar().encode(x=alt.X("เดือน:O", title="เดือน"), y=alt.Y("จำนวน:Q", title="จำนวนวัน"), color=alt.Color("สถานะ:N", scale=alt.Scale(domain=["มาปกติ", "มาสาย", "ขาดงาน", "ลืมสแกน"], range=["#22c55e", "#f59e0b", "#ef4444", "#a78bfa"])), tooltip=["เดือน", "สถานะ", "จำนวน"]).properties(height=280)
+                df_melt = df_monthly_c.melt(
+                    id_vars="เดือน",
+                    value_vars=["มาปกติ", "มาสาย", "ขาดงาน", "ลืมสแกน"],
+                    var_name="สถานะ", value_name="จำนวน",
+                )
+                bar = alt.Chart(df_melt).mark_bar().encode(
+                    x=alt.X("เดือน:O", title="เดือน"),
+                    y=alt.Y("จำนวน:Q", title="จำนวนวัน"),
+                    color=alt.Color("สถานะ:N", scale=alt.Scale(
+                        domain=["มาปกติ", "มาสาย", "ขาดงาน", "ลืมสแกน"],
+                        range=["#22c55e", "#f59e0b", "#ef4444", "#a78bfa"],
+                    )),
+                    tooltip=["เดือน", "สถานะ", "จำนวน"],
+                ).properties(height=280)
                 st.altair_chart(bar, use_container_width=True)
+
+            # กราฟ Bar: วันลาแยกตามกลุ่มงาน
             if not df_leave.empty and "กลุ่มงาน" in df_leave.columns:
                 st.subheader("📋 วันลารวมแยกตามกลุ่มงาน (Top 10)")
-                st.altair_chart(alt.Chart(df_leave.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().nlargest(10).reset_index()).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(x=alt.X("จำนวนวันลา:Q", title="วันลารวม"), y=alt.Y("กลุ่มงาน:N", sort="-x", title=""), color=alt.value("#6366f1"), tooltip=["กลุ่มงาน", "จำนวนวันลา"]).properties(height=320), use_container_width=True)
+                df_lc = df_leave.groupby("กลุ่มงาน")["จำนวนวันลา"].sum().nlargest(10).reset_index()
+                st.altair_chart(
+                    alt.Chart(df_lc).mark_bar(
+                        cornerRadiusTopRight=4, cornerRadiusBottomRight=4
+                    ).encode(
+                        x=alt.X("จำนวนวันลา:Q", title="วันลารวม"),
+                        y=alt.Y("กลุ่มงาน:N", sort="-x", title=""),
+                        color=alt.value("#6366f1"),
+                        tooltip=["กลุ่มงาน", "จำนวนวันลา"],
+                    ).properties(height=320),
+                    use_container_width=True,
+                )
 
+    # ── Tab 4: วิเคราะห์ ──────────────────────────────────────
     with tab_insight:
         st.subheader("🔍 ข้อวิเคราะห์จากข้อมูลจริง")
-        if df_work.empty: st.info("ไม่มีข้อมูลเพียงพอสำหรับการวิเคราะห์")
+        if df_work.empty:
+            st.info("ไม่มีข้อมูลเพียงพอสำหรับการวิเคราะห์")
         else:
-            insights = [f"📌 อัตรามาปกติรวมทั้งหมด **{pct_ok:.1f}%** จากทั้งหมด {total_work:,} วันทำการ" + (" (✅ ผ่านเกณฑ์ 80%)" if pct_ok >= 80 else " (⚠️ ต่ำกว่าเกณฑ์ 80%)")]
+            insights = []
+
+            # 1. อัตรามาปกติรวม
+            insights.append(f"📌 อัตรามาปกติรวมทั้งหมด **{pct_ok:.1f}%** จากทั้งหมด {total_work:,} วันทำการ"
+                             + (" (✅ ผ่านเกณฑ์ 80%)" if pct_ok >= 80 else " (⚠️ ต่ำกว่าเกณฑ์ 80%)"))
+
+            # 2. บุคลากรมาสายมากสุด
             if "ชื่อ-สกุล" in df_work.columns:
                 late_by_name = df_work[df_work["สถานะสแกน"] == "มาสาย"].groupby("ชื่อ-สกุล").size().nlargest(3)
-                if not late_by_name.empty: insights.append(f"⏰ บุคลากรมาสายสูงสุด 3 อันดับ: {', '.join([f'{n} ({c} วัน)' for n, c in late_by_name.items()])}")
+                if not late_by_name.empty:
+                    top_late = ", ".join([f"{n} ({c} วัน)" for n, c in late_by_name.items()])
+                    insights.append(f"⏰ บุคลากรมาสายสูงสุด 3 อันดับ: {top_late}")
+
+            # 3. บุคลากรขาดงานมากสุด
             absent_by_name = df_work[df_work["สถานะสแกน"] == "ขาดงาน"].groupby("ชื่อ-สกุล").size().nlargest(3)
-            if not absent_by_name.empty: insights.append(f"❌ บุคลากรขาดงานสูงสุด 3 อันดับ: {', '.join([f'{n} ({c} วัน)' for n, c in absent_by_name.items()])}")
+            if not absent_by_name.empty:
+                top_abs = ", ".join([f"{n} ({c} วัน)" for n, c in absent_by_name.items()])
+                insights.append(f"❌ บุคลากรขาดงานสูงสุด 3 อันดับ: {top_abs}")
+
+            # 4. เดือนที่มาปกติน้อยสุด
             if "เดือน" in df_work.columns:
-                m_pct = (df_work[df_work["สถานะสแกน"] == "มาปกติ"].groupby("เดือน").size() / df_work.groupby("เดือน").size() * 100).dropna()
-                if not m_pct.empty: insights.extend([f"📅 เดือนที่มาปกติน้อยที่สุด: **{m_pct.idxmin()}** ({m_pct[m_pct.idxmin()]:.1f}%)", f"📅 เดือนที่มาปกติมากที่สุด: **{m_pct.idxmax()}** ({m_pct[m_pct.idxmax()]:.1f}%)"])
-            if n_forgot > 0: insights.append(f"🟣 มีการลืมสแกนนิ้ว **{n_forgot:,} ครั้ง** ({n_forgot/total_work*100:.1f}% ของวันทำการ)")
+                m_ok = df_work[df_work["สถานะสแกน"] == "มาปกติ"].groupby("เดือน").size()
+                m_total = df_work.groupby("เดือน").size()
+                m_pct = (m_ok / m_total * 100).dropna()
+                if not m_pct.empty:
+                    worst_m = m_pct.idxmin()
+                    insights.append(f"📅 เดือนที่มาปกติน้อยที่สุด: **{worst_m}** ({m_pct[worst_m]:.1f}%)")
+                    best_m = m_pct.idxmax()
+                    insights.append(f"📅 เดือนที่มาปกติมากที่สุด: **{best_m}** ({m_pct[best_m]:.1f}%)")
+
+            # 5. ลืมสแกนนิ้ว
+            if n_forgot > 0:
+                insights.append(f"🟣 มีการลืมสแกนนิ้ว **{n_forgot:,} ครั้ง** ({n_forgot/total_work*100:.1f}% ของวันทำการ)")
+
+            # 6. ประเภทลาที่ใช้มากสุด
             if not df_leave.empty and "ประเภทการลา" in df_leave.columns:
                 top_leave = df_leave["ประเภทการลา"].value_counts().head(1)
-                if not top_leave.empty: insights.append(f"🗂️ ประเภทการลาที่ใช้มากที่สุด: **{top_leave.index[0]}** ({top_leave.iloc[0]:,} ครั้ง)")
-            if total_work > 0 and n_absent / total_work > 0.1: insights.append(f"🚨 สัดส่วนขาดงาน **{n_absent/total_work*100:.1f}%** สูงเกิน 10% ควรตรวจสอบ")
-            for ins in insights: st.markdown(f"- {ins}")
+                if not top_leave.empty:
+                    insights.append(f"🗂️ ประเภทการลาที่ใช้มากที่สุด: **{top_leave.index[0]}** ({top_leave.iloc[0]:,} ครั้ง)")
 
+            # 7. สัดส่วนขาดงาน warning
+            if total_work > 0 and n_absent / total_work > 0.1:
+                insights.append(f"🚨 สัดส่วนขาดงาน **{n_absent/total_work*100:.1f}%** สูงเกิน 10% ควรตรวจสอบ")
+
+            for ins in insights:
+                st.markdown(f"- {ins}")
+
+    # ── Tab 5: Export ─────────────────────────────────────────
     with tab_export:
         today = dt.date.today()
-        month_opts = pd.date_range(f"{today.year-2}-01-01", f"{today.year+1}-12-31", freq="MS").strftime("%Y-%m").tolist()
-        export_month = st.selectbox("เลือกเดือน", month_opts, index=month_opts.index(today.strftime("%Y-%m")) if today.strftime("%Y-%m") in month_opts else 0, key="export_month_sel")
+        month_opts = pd.date_range(f"{today.year-2}-01-01", f"{today.year+1}-12-31",
+                                   freq="MS").strftime("%Y-%m").tolist()
+        export_month = st.selectbox(
+            "เลือกเดือน", month_opts,
+            index=month_opts.index(today.strftime("%Y-%m")) if today.strftime("%Y-%m") in month_opts else 0,
+            key="export_month_sel",
+        )
         if st.button("📊 สร้างรายงาน Excel", type="primary", key="btn_export"):
-            m_start = pd.to_datetime(export_month + "-01"); m_end = m_start + pd.offsets.MonthEnd(0)
-            df_lm = df_leave[(df_leave["วันที่เริ่ม"] >= m_start) & (df_leave["วันที่เริ่ม"] <= m_end)] if not df_leave.empty else pd.DataFrame()
-            df_wm = df_work[df_work["เดือน"] == export_month] if not df_work.empty else pd.DataFrame()
-            output = io.BytesIO()
+            m_start = pd.to_datetime(export_month + "-01")
+            m_end   = m_start + pd.offsets.MonthEnd(0)
+            df_lm   = df_leave[(df_leave["วันที่เริ่ม"] >= m_start) & (df_leave["วันที่เริ่ม"] <= m_end)] \
+                      if not df_leave.empty else pd.DataFrame()
+            df_wm   = df_work[df_work["เดือน"] == export_month] if not df_work.empty else pd.DataFrame()
+            output  = io.BytesIO()
             with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
                 pd.DataFrame({
                     "รายการ": ["การลา (ครั้ง)", "วันลารวม", "วันทำการ", "มาปกติ", "มาสาย", "ขาดงาน"],
-                    "จำนวน": [len(df_lm), int(df_lm["จำนวนวันลา"].sum()) if not df_lm.empty else 0, len(df_wm), len(df_wm[df_wm["สถานะสแกน"] == "มาปกติ"]) if not df_wm.empty else 0, len(df_wm[df_wm["สถานะสแกน"] == "มาสาย"]) if not df_wm.empty else 0, len(df_wm[df_wm["สถานะสแกน"] == "ขาดงาน"]) if not df_wm.empty else 0],
+                    "จำนวน": [
+                        len(df_lm),
+                        int(df_lm["จำนวนวันลา"].sum()) if not df_lm.empty else 0,
+                        len(df_wm),
+                        len(df_wm[df_wm["สถานะสแกน"] == "มาปกติ"]) if not df_wm.empty else 0,
+                        len(df_wm[df_wm["สถานะสแกน"] == "มาสาย"])  if not df_wm.empty else 0,
+                        len(df_wm[df_wm["สถานะสแกน"] == "ขาดงาน"]) if not df_wm.empty else 0,
+                    ],
                 }).to_excel(writer, sheet_name="สรุป", index=False)
                 if not df_lm.empty: df_lm.to_excel(writer, sheet_name="การลา", index=False)
                 if not df_wm.empty: df_wm.to_excel(writer, sheet_name="การมาปฏิบัติงาน", index=False)
-            st.download_button("⬇️ ดาวน์โหลดรายงาน", output.getvalue(), f"HR_Report_{export_month}.xlsx", mime=EXCEL_MIME)
+            st.download_button(
+                "⬇️ ดาวน์โหลดรายงาน",
+                output.getvalue(),
+                f"HR_Report_{export_month}.xlsx",
+                mime=EXCEL_MIME,
+            )
 
 # ===========================
 # 📅 ตรวจสอบการปฏิบัติงาน
@@ -1136,6 +1495,7 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
 
     tab_all, tab_person = st.tabs(["📋 สรุปทุกคน", "📄 ทะเบียนคุมวันลา (รายบุคคล)"])
 
+    # ── ข้อมูลร่วมทั้ง 2 tabs ──────────────────────────────
     att_dict = {}
     if not df_att.empty:
         name_col = next((c for c in ["ชื่อ-สกุล","ชื่อพนักงาน","ชื่อ"] if c in df_att.columns), "ชื่อ-สกุล")
@@ -1159,16 +1519,21 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 comp = re.sub(r"\d+\.\s*","",comp).strip()
                 if comp and len(comp) >= 3 and comp.lower() != "nan": names.append(comp)
             for p in set(names):
-                travel_index.setdefault(p, []).append((row["วันที่เริ่ม"].date(), row["วันที่สิ้นสุด"].date(), proj))
+                travel_index.setdefault(p, []).append((
+                    row["วันที่เริ่ม"].date(), row["วันที่สิ้นสุด"].date(), proj))
 
     LATE_CUTOFF = dt.time(8, 31)
 
     def _get_day_status(name, d_date, d_weekday):
+        """คืนสถานะของ 1 วัน สำหรับบุคลากร 1 คน"""
         for ls, le, ltype in leave_index.get(name, []):
-            if ls <= d_date <= le: return "leave", ltype
+            if ls <= d_date <= le:
+                return "leave", ltype
         for ts, te, proj in travel_index.get(name, []):
-            if ts <= d_date <= te: return "travel", proj
-        if d_weekday >= 5: return "weekend", ""
+            if ts <= d_date <= te:
+                return "travel", proj
+        if d_weekday >= 5:
+            return "weekend", ""
         att_row = att_dict.get((name, d_date))
         if att_row is not None:
             t_in  = parse_time(att_row.get("เวลาเข้า",""))
@@ -1184,13 +1549,10 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
     # Tab 1: สรุปทุกคน (เดิม)
     # ════════════════════════════════════════════════════════
     with tab_all:
-        selected_months = st.multiselect("📅 เลือกเดือน", months_att, default=[months_att[-1]] if months_att else [])
+        selected_months = st.multiselect("📅 เลือกเดือน", months_att,
+                                          default=[months_att[-1]] if months_att else [])
         selected_names  = st.multiselect("👥 บุคลากร (ว่าง = ทุกคน)", all_names)
         names_to_process = selected_names or all_names
-        
-        # 📌 ประกาศตัวแปร df_result_all ไว้รอรับค่าจากลูป
-        df_result_all = pd.DataFrame() 
-        
         if not selected_months or not names_to_process:
             st.warning("กรุณาเลือกเดือนและบุคลากร")
         else:
@@ -1229,36 +1591,52 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                     }
                     records.append(rec)
             prog.empty()
-            
-            # 📌 กำหนดค่าให้ df_result_all ตรงนี้
-            df_result_all = pd.DataFrame(records).sort_values(["ชื่อพนักงาน","วันที่"])
-            
+            df_result = pd.DataFrame(records).sort_values(["ชื่อพนักงาน","วันที่"])
             STATUS_COLORS = {
-                "มาปกติ":   "background-color:#dcfce7", "มาสาย":    "background-color:#fef9c3",
-                "ขาดงาน":   "background-color:#fee2e2", "ลืมสแกน":  "background-color:#f3e8ff",
+                "มาปกติ":   "background-color:#dcfce7",
+                "มาสาย":    "background-color:#fef9c3",
+                "ขาดงาน":   "background-color:#fee2e2",
+                "ลืมสแกน":  "background-color:#f3e8ff",
                 "วันหยุด":   "background-color:#f1f5f9",
             }
             def color_status(val):
                 for k, v in STATUS_COLORS.items():
                     if str(val).startswith(k): return v
                 return ""
-            st.dataframe(df_result_all.style.map(color_status, subset=["สถานะ"]), use_container_width=True, height=500)
+            st.dataframe(
+                df_result.style.applymap(color_status, subset=["สถานะ"]),
+                use_container_width=True, height=500,
+            )
+
 
     # ════════════════════════════════════════════════════════
-    # Tab 2: ทะเบียนคุมวันลา รายบุคคล 
+    # Tab 2: ทะเบียนคุมวันลา รายบุคคล (v2 - generate_leave_register)
     # ════════════════════════════════════════════════════════
     with tab_person:
         import calendar as _cal
 
-        def generate_leave_register(df_daily: pd.DataFrame, person_name: str, fiscal_year_be: int, selected_months: list) -> pd.DataFrame:
+        # ── helper functions ────────────────────────────────
+        def generate_leave_register(df_daily: pd.DataFrame, person_name: str,
+                                    fiscal_year_be: int, selected_months: list) -> pd.DataFrame:
+            """สร้างตาราง matrix 1-31 สำหรับทะเบียนคุมวันลา"""
             fy_ad = fiscal_year_be - 543
             all_months_data = [
-                ("ตุลาคม", 10, fy_ad - 1), ("พฤศจิกายน", 11, fy_ad - 1), ("ธันวาคม", 12, fy_ad - 1),
-                ("มกราคม", 1, fy_ad), ("กุมภาพันธ์", 2, fy_ad), ("มีนาคม", 3, fy_ad),
-                ("เมษายน", 4, fy_ad), ("พฤษภาคม", 5, fy_ad), ("มิถุนายน", 6, fy_ad),
-                ("กรกฎาคม", 7, fy_ad), ("สิงหาคม", 8, fy_ad), ("กันยายน", 9, fy_ad),
+                ("ตุลาคม",    10, fy_ad - 1),
+                ("พฤศจิกายน", 11, fy_ad - 1),
+                ("ธันวาคม",   12, fy_ad - 1),
+                ("มกราคม",     1, fy_ad),
+                ("กุมภาพันธ์", 2, fy_ad),
+                ("มีนาคม",     3, fy_ad),
+                ("เมษายน",     4, fy_ad),
+                ("พฤษภาคม",    5, fy_ad),
+                ("มิถุนายน",   6, fy_ad),
+                ("กรกฎาคม",    7, fy_ad),
+                ("สิงหาคม",    8, fy_ad),
+                ("กันยายน",    9, fy_ad),
             ]
-            months_data = all_months_data if "ทั้งหมด (12 เดือน)" in selected_months else [m for m in all_months_data if m[0] in selected_months]
+            months_data = all_months_data if "ทั้งหมด (12 เดือน)" in selected_months else [
+                m for m in all_months_data if m[0] in selected_months
+            ]
 
             df_p = df_daily[df_daily["ชื่อพนักงาน"] == person_name].copy()
             if not df_p.empty:
@@ -1274,12 +1652,10 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                     if "ลากิจ"   in s: return "ก"
                     if "ลาพักผ่อน" in s: return "พ"
                     if "ลาคลอด"  in s: return "ค"
-                    if "ไปราชการ" in s: return "ร"
+                    if "ไปราชการ" in s: return "มอ"
                     if "มาสาย"   in s: return "ส"
                     if "ขาดงาน"  in s: return "ข"
                     if "ลืมสแกน" in s: return "-"
-                    if "มาปกติ"  in s: return "✓"
-                    if "ลา"      in s: return "ล"
                     return ""
                 df_p["symbol"] = df_p["สถานะ"].apply(_sym)
             else:
@@ -1291,124 +1667,160 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 df_m = df_p[(df_p["month"] == m_num) & (df_p["year"] == m_year)]
                 row = {"เดือน": m_name}
                 for d in range(1, 32):
-                    if d > max_days: row[str(d)] = "/"
+                    if d > max_days:
+                        row[str(d)] = "/"
                     else:
                         vals = df_m[df_m["day"] == d]["symbol"].values
-                        row[str(d)] = vals[0] if len(vals) > 0 else "ข"
+                        row[str(d)] = vals[0] if len(vals) > 0 else ""
                 row.update({
-                    "มาทำงาน(วัน)":   len(df_m[df_m["symbol"] == "✓"]) + len(df_m[df_m["symbol"] == "ส"]),
                     "ป่วย(วัน)":      len(df_m[df_m["symbol"] == "ป"]),
                     "กิจ(วัน)":       len(df_m[df_m["symbol"] == "ก"]),
                     "พักผ่อน(วัน)":   len(df_m[df_m["symbol"] == "พ"]),
-                    "ราชการ(วัน)":    len(df_m[df_m["symbol"] == "ร"]),
                     "ขาด(วัน)":       len(df_m[df_m["symbol"] == "ข"]),
                     "สาย(ครั้ง)":     len(df_m[df_m["symbol"] == "ส"]),
                     "ลืมสแกน(ครั้ง)": len(df_m[df_m["symbol"] == "-"]),
                 })
                 matrix_data.append(row)
             df_mat = pd.DataFrame(matrix_data)
-            if not df_mat.empty: df_mat = df_mat.set_index("เดือน")
+            if not df_mat.empty:
+                df_mat = df_mat.set_index("เดือน")
             return df_mat
 
         def style_leave_register(df: pd.DataFrame):
-            """ตกแต่งสีให้ดูง่าย สบายตา และเน้นจุดผิดปกติ (แยกสีประเภทการลา)"""
+            """ตกแต่งสีตาราง"""
             if df.empty: return df
-            styles = {
-                "มาทำงาน(วัน)": "background-color: #e8f5e9; color: #2e7d32; font-weight: bold;", 
-                "ป่วย(วัน)": "background-color: #fff9c4; color: black;", 
-                "กิจ(วัน)": "background-color: #fff9c4; color: black;", 
-                "พักผ่อน(วัน)": "background-color: #fff9c4; color: black;", 
-                "ราชการ(วัน)": "background-color: #e3f2fd; color: black;", 
-                "ขาด(วัน)": "background-color: #ffcc80; color: black; font-weight: bold;", 
-                "สาย(ครั้ง)": "background-color: #ffe0b2; color: black;", 
-                "ลืมสแกน(ครั้ง)": "background-color: #f8bbd0; color: black;" 
+            stat_styles = {
+                "ป่วย(วัน)":       "background-color:#fff59d;color:black;font-weight:bold",
+                "กิจ(วัน)":        "background-color:#fff59d;color:black;font-weight:bold",
+                "พักผ่อน(วัน)":    "background-color:#fff59d;color:black;font-weight:bold",
+                "ขาด(วัน)":        "background-color:#ffcc80;color:black",
+                "สาย(ครั้ง)":      "background-color:#bbdefb;color:black",
+                "ลืมสแกน(ครั้ง)":  "background-color:#f48fb1;color:black",
             }
-            def apply_style(col): return [styles.get(col.name, "")] * len(col)
-            def color_symbols(val):
-                if val == "X": return "color: #bdbdbd;"                               
-                if val == "✓": return "color: #2e7d32; font-weight: bold;"            
-                if val == "ป": return "color: #1976D2; font-weight: bold;"            
-                if val == "ก": return "color: #9C27B0; font-weight: bold;"            
-                if val == "พ": return "color: #00897B; font-weight: bold;"            
-                if val == "ร": return "color: #3F51B5; font-weight: bold;"            
-                if val == "ล": return "color: #795548; font-weight: bold;"            
-                if val in ["ส", "ข", "-"]: return "color: #d84315; font-weight: bold;" 
-                if val == "/": return "background-color: #f5f5f5; color: #eeeeee;"    
+            def apply_col_style(col):
+                return [stat_styles.get(col.name, "")] * len(col)
+            def color_sym(val):
+                if val == "X":   return "color:#9e9e9e"
+                if val in ("ป","ก","พ","ค","มอ"): return "color:#1565c0;font-weight:bold"
+                if val in ("ส","ข","-"): return "color:#d84315;font-weight:bold"
+                if val == "/":   return "color:#e0e0e0"
                 return ""
-            return (df.style.apply(apply_style, axis=0).map(color_symbols, subset=[str(i) for i in range(1, 32)]).set_properties(**{'text-align': 'center', 'border': '1px solid #eeeeee'}))
+            day_subset = [str(i) for i in range(1, 32) if str(i) in df.columns]
+            return (df.style
+                    .apply(apply_col_style, axis=0)
+                    .applymap(color_sym, subset=day_subset)
+                    .set_properties(**{"text-align":"center","border":"1px solid #eeeeee"}))
 
+        # ── UI ──────────────────────────────────────────────
         col_r1, col_r2, col_r3 = st.columns([1, 1, 2])
         with col_r1:
-            today_y     = dt.date.today().year + 543
-            fy_options  = [today_y - 1, today_y, today_y + 1]
-            reg_year    = st.selectbox("ปีงบประมาณ (พ.ศ.)", fy_options, index=1, key="reg_year")
+            today_y    = dt.date.today().year + 543
+            fy_options = [today_y - 1, today_y, today_y + 1]
+            reg_year   = st.selectbox("ปีงบประมาณ (พ.ศ.)", fy_options,
+                                      index=1, key="reg_year")
         with col_r2:
-            reg_person  = st.selectbox("เลือกบุคลากร", all_names, key="reg_person")
+            reg_person = st.selectbox("เลือกบุคลากร", all_names, key="reg_person")
         with col_r3:
-            month_opts  = ["ทั้งหมด (12 เดือน)", "ตุลาคม","พฤศจิกายน","ธันวาคม","มกราคม","กุมภาพันธ์","มีนาคม", "เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน"]
-            reg_months  = st.multiselect("เดือนที่ต้องการแสดง", month_opts, default=["ทั้งหมด (12 เดือน)"], key="reg_months")
+            month_opts = [
+                "ทั้งหมด (12 เดือน)",
+                "ตุลาคม","พฤศจิกายน","ธันวาคม","มกราคม","กุมภาพันธ์","มีนาคม",
+                "เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน",
+            ]
+            reg_months = st.multiselect("เลือกเดือนที่ต้องการแสดง", month_opts,
+                                         default=["ทั้งหมด (12 เดือน)"], key="reg_months")
 
+        # ── ข้อมูลบุคลากร ──────────────────────────────────
         person_info = {}
         if not df_staff.empty and reg_person:
             row_s = df_staff[df_staff["ชื่อ-สกุล"] == reg_person]
-            if not row_s.empty: person_info = row_s.iloc[0].to_dict()
+            if not row_s.empty:
+                person_info = row_s.iloc[0].to_dict()
 
         st.markdown(f"""
-        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 16px;margin-bottom:10px">
-        <b>ทะเบียนคุมวันลา &nbsp; ปีงบประมาณ พ.ศ. {reg_year}</b><br>
-        ชื่อ &nbsp;<b>{reg_person}</b> &nbsp;&nbsp;
-        ตำแหน่ง &nbsp;<b>{person_info.get("ตำแหน่ง","—")}</b> &nbsp;&nbsp;
-        กลุ่มงาน &nbsp;<b>{person_info.get("กลุ่มงาน","—")}</b>
-        </div>
-        """, unsafe_allow_html=True)
+<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 16px;margin-bottom:10px">
+<b>ทะเบียนคุมวันลา &nbsp; ปีงบประมาณ พ.ศ. {reg_year}</b><br>
+ชื่อ &nbsp;<b>{reg_person}</b> &nbsp;&nbsp;
+ตำแหน่ง &nbsp;<b>{person_info.get("ตำแหน่ง","—")}</b> &nbsp;&nbsp;
+กลุ่มงาน &nbsp;<b>{person_info.get("กลุ่มงาน","—")}</b>
+</div>
+""", unsafe_allow_html=True)
 
         if st.button("📊 สร้างทะเบียนคุม", type="primary", key="btn_gen_reg"):
-            if not reg_months: st.warning("⚠️ กรุณาเลือกเดือนอย่างน้อย 1 เดือน")
+            if not reg_months:
+                st.warning("⚠️ กรุณาเลือกเดือนอย่างน้อย 1 เดือน")
             else:
                 with st.spinner("กำลังดึงข้อมูล..."):
-                    fy_ad   = reg_year - 543
-                    fy_months_range = pd.date_range(dt.date(fy_ad - 1, 10, 1), dt.date(fy_ad, 9, 30), freq="D")
+                    fy_ad = reg_year - 543
+                    fy_months_range = pd.date_range(
+                        dt.date(fy_ad - 1, 10, 1),
+                        dt.date(fy_ad, 9, 30), freq="D"
+                    )
                     holiday_fy_set = set()
-                    for yr in {fy_ad - 1, fy_ad}: holiday_fy_set.update(get_holiday_dates(yr))
+                    for yr in {fy_ad - 1, fy_ad}:
+                        holiday_fy_set.update(get_holiday_dates(yr))
 
                     recs = []
                     for d in fy_months_range:
-                        d_date   = d.date()
+                        d_date = d.date()
                         stype, sval = _get_day_status(reg_person, d_date, d.weekday())
-                        att_row  = att_dict.get((reg_person, d_date))
-                        status   = {
-                            "leave":   f"ลา ({sval})", "travel":  "ไปราชการ", "weekend": "วันหยุด",
-                            "absent":  "ขาดงาน", "forgot":  "ลืมสแกน", "late":    "มาสาย", "ok":      "มาปกติ",
+                        status = {
+                            "leave":   f"ลา ({sval})",
+                            "travel":  "ไปราชการ",
+                            "weekend": "วันหยุด",
+                            "absent":  "ขาดงาน",
+                            "forgot":  "ลืมสแกน",
+                            "late":    "มาสาย",
+                            "ok":      "มาปกติ",
                         }.get(stype, "ขาดงาน")
-                        if d_date in holiday_fy_set and stype not in ("leave","travel"): status = "วันหยุด"
+                        if d_date in holiday_fy_set and stype not in ("leave","travel"):
+                            status = "วันหยุด"
                         recs.append({"ชื่อพนักงาน": reg_person, "วันที่": d_date, "สถานะ": status})
                     df_result_reg = pd.DataFrame(recs)
+                    df_register   = generate_leave_register(
+                        df_result_reg, reg_person, reg_year, reg_months
+                    )
 
-                    df_register = generate_leave_register(df_result_reg, reg_person, reg_year, reg_months)
-
-                if df_register.empty: st.info(f"ไม่พบข้อมูลของ {reg_person} ในช่วงเวลาที่เลือก")
+                if df_register.empty:
+                    st.info(f"ไม่พบข้อมูลของ {reg_person} ในช่วงเวลาที่เลือก")
                 else:
-                    st.dataframe(style_leave_register(df_register), use_container_width=True, height=520)
-                    st.markdown("""
-                    <div style="font-size: 0.9em; margin-top: 5px; padding: 12px; border-radius: 8px; background-color: #f8fafc; border: 1px solid #e2e8f0; line-height: 1.8;">
-                        <b>คำอธิบายสัญลักษณ์:</b><br>
-                        <span style="color: #2e7d32; font-weight: bold;">✓ มาปกติ</span> &nbsp;|&nbsp;
-                        <span style="color: #bdbdbd; font-weight: bold;">X วันหยุด (ส.-อา./นักขัตฤกษ์)</span> &nbsp;|&nbsp;
-                        <span style="color: #1976D2; font-weight: bold;">ป ลาป่วย</span> &nbsp;|&nbsp;
-                        <span style="color: #9C27B0; font-weight: bold;">ก ลากิจ</span> &nbsp;|&nbsp;
-                        <span style="color: #00897B; font-weight: bold;">พ ลาพักผ่อน</span> &nbsp;|&nbsp;
-                        <span style="color: #3F51B5; font-weight: bold;">ร ไปราชการ</span> &nbsp;|&nbsp;
-                        <span style="color: #795548; font-weight: bold;">ล ลาอื่นๆ</span> &nbsp;|&nbsp;
-                        <span style="color: #d84315; font-weight: bold;">ส มาสาย</span> &nbsp;|&nbsp;
-                        <span style="color: #d84315; font-weight: bold;">ข ขาดราชการ</span> &nbsp;|&nbsp;
-                        <span style="color: #d84315; font-weight: bold;">- ลืมสแกนนิ้ว</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.write("")
+                    st.markdown(f"**ทะเบียนคุมวันลา:** {reg_person} | **ปีงบประมาณ:** {reg_year}")
+                    st.dataframe(
+                        style_leave_register(df_register),
+                        use_container_width=True, height=500,
+                    )
 
+                    # คำอธิบายสัญลักษณ์
+                    st.markdown("""
+<div style="font-size:0.9em;margin-top:5px;padding:12px;border-radius:8px;
+            background-color:#f8fafc;border:1px solid #e2e8f0;line-height:1.8">
+<b>คำอธิบายสัญลักษณ์:</b><br>
+<span style="color:#2e7d32;font-weight:bold">✓ มาปกติ</span> &nbsp;|&nbsp;
+<span style="color:#bdbdbd;font-weight:bold">X วันหยุด (ส.-อา./นักขัตฤกษ์)</span> &nbsp;|&nbsp;
+<span style="color:#1976D2;font-weight:bold">ป ลาป่วย</span> &nbsp;|&nbsp;
+<span style="color:#9C27B0;font-weight:bold">ก ลากิจ</span> &nbsp;|&nbsp;
+<span style="color:#00897B;font-weight:bold">พ ลาพักผ่อน</span> &nbsp;|&nbsp;
+<span style="color:#3F51B5;font-weight:bold">ร ไปราชการ</span> &nbsp;|&nbsp;
+<span style="color:#795548;font-weight:bold">ล ลาอื่นๆ</span> &nbsp;|&nbsp;
+<span style="color:#d84315;font-weight:bold">ส มาสาย</span> &nbsp;|&nbsp;
+<span style="color:#d84315;font-weight:bold">ข ขาดราชการ</span> &nbsp;|&nbsp;
+<span style="color:#d84315;font-weight:bold">- ลืมสแกนนิ้ว</span> &nbsp;|&nbsp;
+<span style="color:#e0e0e0;font-weight:bold">/ ไม่มีวันนี้ในเดือน</span>
+</div>
+""", unsafe_allow_html=True)
+
+                    st.write("")  # เว้นบรรทัด
+
+                    # Export Excel
                     buf2 = io.BytesIO()
-                    with pd.ExcelWriter(buf2, engine="xlsxwriter") as writer: df_register.to_excel(writer, sheet_name="ทะเบียนคุมวันลา")
-                    st.download_button("📥 ดาวน์โหลด Excel ทะเบียนคุม", buf2.getvalue(), f"Leave_Register_{reg_year}_{reg_person}.xlsx", mime=EXCEL_MIME, key="dl_reg")
+                    with pd.ExcelWriter(buf2, engine="xlsxwriter") as writer:
+                        df_register.to_excel(writer, sheet_name="ทะเบียนคุมวันลา")
+                    st.download_button(
+                        "📥 ดาวน์โหลด Excel ทะเบียนคุม",
+                        buf2.getvalue(),
+                        f"Leave_Register_{reg_year}_{reg_person}.xlsx",
+                        mime=EXCEL_MIME,
+                        key="dl_reg",
+                    )
 
 
 # ===========================
