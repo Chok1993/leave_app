@@ -39,54 +39,67 @@ logger = logging.getLogger(__name__)
 # ===========================
 CUSTOM_CSS = """
 <style>
-/* ── Google Font ───────────────────────────────────────── */
 @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap');
 
-/* ── Global dark background ────────────────────────────── */
-html, body, [class*="css"], .stApp {
-    font-family: 'Sarabun', sans-serif !important;
+/* ═══════════════════════════════════════════════
+   GLOBAL DARK BASE
+═══════════════════════════════════════════════ */
+html, body { background: #0f172a !important; }
+
+.stApp, .stApp > * {
     background-color: #0f172a !important;
-    color: #e2e8f0 !important;
+    font-family: 'Sarabun', sans-serif !important;
 }
 
-/* Main content area */
-.block-container {
+/* Main block */
+.block-container, [data-testid="block-container"],
+.main .block-container {
     background-color: #0f172a !important;
+    color: #e2e8f0 !important;
     padding-top: 1.5rem !important;
 }
 
-/* ── Sidebar dark ───────────────────────────────────────── */
-section[data-testid="stSidebar"] {
+/* ALL text white by default */
+.stApp p, .stApp span, .stApp div, .stApp label,
+.stApp li, .stApp h1, .stApp h2, .stApp h3,
+.stApp h4, .stApp h5, .stApp h6 {
+    color: #e2e8f0 !important;
+}
+
+/* ═══════════════════════════════════════════════
+   SIDEBAR
+═══════════════════════════════════════════════ */
+section[data-testid="stSidebar"],
+section[data-testid="stSidebar"] > div {
     background: linear-gradient(180deg, #020617 0%, #0f172a 100%) !important;
     border-right: 1px solid #1e293b;
 }
 section[data-testid="stSidebar"] * { color: #cbd5e1 !important; }
 section[data-testid="stSidebar"] .stRadio > label {
-    background: rgba(255,255,255,0.04); border-radius: 8px;
+    background: rgba(255,255,255,0.04) !important;
+    border-radius: 8px;
     padding: 7px 12px; margin: 2px 0; display: block;
     transition: background 0.2s; border: 1px solid transparent;
+    color: #cbd5e1 !important;
 }
 section[data-testid="stSidebar"] .stRadio > label:hover {
-    background: rgba(99,102,241,0.2); border-color: #6366f1;
-}
-section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
-    color: #94a3b8 !important;
+    background: rgba(99,102,241,0.2) !important;
+    border-color: #6366f1;
 }
 
-/* ── Tabs ───────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════
+   TABS
+═══════════════════════════════════════════════ */
 .stTabs [data-baseweb="tab-list"] {
     background: #1e293b !important;
-    border-radius: 10px;
-    padding: 4px;
-    gap: 4px;
+    border-radius: 10px; padding: 4px; gap: 4px;
 }
 .stTabs [data-baseweb="tab"] {
     background: transparent !important;
     color: #94a3b8 !important;
     border-radius: 8px !important;
-    padding: 6px 16px !important;
-    font-weight: 600;
-    border: none !important;
+    padding: 6px 18px !important;
+    font-weight: 600; border: none !important;
 }
 .stTabs [aria-selected="true"] {
     background: #6366f1 !important;
@@ -96,78 +109,127 @@ section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
     background: transparent !important;
     padding-top: 1rem;
 }
+/* Tab panel text */
+.stTabs [data-baseweb="tab-panel"] * {
+    color: #e2e8f0 !important;
+}
 
-/* ── Cards / Metrics ────────────────────────────────────── */
+/* ═══════════════════════════════════════════════
+   METRIC CARDS
+═══════════════════════════════════════════════ */
 div[data-testid="metric-container"] {
     background: #1e293b !important;
-    border-radius: 12px;
-    padding: 16px;
-    border: 1px solid #334155;
+    border-radius: 12px; padding: 16px;
+    border: 1px solid #334155 !important;
     box-shadow: 0 2px 8px rgba(0,0,0,0.4);
 }
-div[data-testid="metric-container"] label { color: #94a3b8 !important; }
-div[data-testid="metric-container"] [data-testid="stMetricValue"] {
-    color: #f1f5f9 !important;
-    font-weight: 700;
+div[data-testid="metric-container"] label,
+div[data-testid="stMetricLabel"],
+div[data-testid="stMetricLabel"] * { color: #94a3b8 !important; }
+div[data-testid="stMetricValue"],
+div[data-testid="stMetricValue"] * { color: #f1f5f9 !important; font-weight: 700; }
+div[data-testid="stMetricDelta"],
+div[data-testid="stMetricDelta"] * { color: #86efac !important; }
+
+/* ═══════════════════════════════════════════════
+   INPUTS — selectbox, multiselect, text, date
+═══════════════════════════════════════════════ */
+/* Labels above inputs */
+.stSelectbox label, .stMultiSelect label,
+.stTextInput label, .stTextArea label,
+.stDateInput label, .stTimeInput label,
+.stNumberInput label, .stSlider label,
+[data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] * {
+    color: #94a3b8 !important;
+    font-weight: 600;
 }
 
-/* ── DataFrames ─────────────────────────────────────────── */
-[data-testid="stDataFrame"] {
-    border-radius: 10px !important;
-    overflow: hidden;
-    border: 1px solid #334155 !important;
-}
-[data-testid="stDataFrame"] th {
-    background: #1e293b !important;
-    color: #a5b4fc !important;
-    font-weight: 700;
-}
-[data-testid="stDataFrame"] td {
-    background: #0f172a !important;
-    color: #cbd5e1 !important;
-    border-color: #1e293b !important;
-}
-[data-testid="stDataFrame"] tr:hover td {
-    background: #1e293b !important;
-}
-
-/* ── Inputs / Selectbox / Multiselect ───────────────────── */
-.stSelectbox > div, .stMultiSelect > div,
-.stTextInput > div, .stTextArea > div,
-.stDateInput > div, .stTimeInput > div {
+/* Input containers */
+.stSelectbox [data-baseweb="select"],
+.stMultiSelect [data-baseweb="select"],
+[data-baseweb="select"] > div,
+[data-baseweb="input"] > div,
+[data-baseweb="textarea"] > div {
     background: #1e293b !important;
     border-color: #334155 !important;
-    color: #e2e8f0 !important;
     border-radius: 8px !important;
 }
-.stSelectbox label, .stMultiSelect label,
-.stTextInput label, .stTextArea label {
-    color: #94a3b8 !important;
+
+/* Input text */
+[data-baseweb="select"] input,
+[data-baseweb="select"] [data-id="placeholder"],
+[data-baseweb="select"] span,
+[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea,
+.stTextInput input, .stTextArea textarea,
+.stDateInput input, .stTimeInput input,
+.stNumberInput input {
+    background: #1e293b !important;
+    color: #e2e8f0 !important;
+    border-color: #334155 !important;
+    caret-color: #6366f1;
 }
-[data-baseweb="select"] *, [data-baseweb="input"] * {
+
+/* Selected value in selectbox */
+[data-baseweb="select"] [data-testid="stMarkdownContainer"],
+[data-baseweb="select"] div[class*="ValueContainer"] * {
+    color: #e2e8f0 !important;
+}
+
+/* Dropdown menu */
+[data-baseweb="popover"], [data-baseweb="menu"],
+[role="listbox"], [role="option"] {
+    background: #1e293b !important;
+    border-color: #334155 !important;
+}
+[role="option"], [role="option"] * {
     background: #1e293b !important;
     color: #e2e8f0 !important;
 }
+[role="option"]:hover, [aria-selected="true"][role="option"] {
+    background: #334155 !important;
+}
+
+/* Multiselect tags */
 [data-baseweb="tag"] {
     background: #4f46e5 !important;
     color: white !important;
+    border-radius: 6px !important;
+}
+[data-baseweb="tag"] span { color: white !important; }
+[data-baseweb="tag"] svg { fill: #a5b4fc !important; }
+
+/* ═══════════════════════════════════════════════
+   DATAFRAME / TABLE
+═══════════════════════════════════════════════ */
+[data-testid="stDataFrame"] {
+    border-radius: 10px !important;
+    border: 1px solid #334155 !important;
+    overflow: hidden;
+}
+[data-testid="stDataFrame"] iframe {
+    background: #0f172a !important;
+    color-scheme: dark;
 }
 
-/* ── Buttons ────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════
+   BUTTONS
+═══════════════════════════════════════════════ */
 .stButton > button {
     background: #1e293b !important;
     color: #cbd5e1 !important;
     border: 1px solid #334155 !important;
     border-radius: 8px !important;
-    font-weight: 600;
-    transition: all 0.2s;
+    font-weight: 600; transition: all 0.2s;
+    font-family: 'Sarabun', sans-serif !important;
 }
 .stButton > button:hover {
     background: #334155 !important;
     border-color: #6366f1 !important;
     color: #a5b4fc !important;
 }
-.stButton > button[kind="primary"] {
+.stButton > button[kind="primary"],
+.stButton > button[data-testid*="primary"] {
     background: linear-gradient(135deg, #4f46e5, #6366f1) !important;
     color: white !important;
     border: none !important;
@@ -177,8 +239,6 @@ div[data-testid="metric-container"] [data-testid="stMetricValue"] {
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(99,102,241,0.4);
 }
-
-/* ── Download button ────────────────────────────────────── */
 .stDownloadButton > button {
     background: #164e63 !important;
     color: #67e8f9 !important;
@@ -187,25 +247,54 @@ div[data-testid="metric-container"] [data-testid="stMetricValue"] {
 }
 .stDownloadButton > button:hover {
     background: #0e7490 !important;
+    color: #e0f2fe !important;
 }
 
-/* ── Progress bar ───────────────────────────────────────── */
-.stProgress > div > div {
-    background: linear-gradient(90deg, #4f46e5, #818cf8) !important;
-}
-
-/* ── Alerts / Info / Warning / Error ────────────────────── */
-.stAlert { border-radius: 10px !important; }
-[data-testid="stAlert"][data-baseweb="notification"] {
+/* ═══════════════════════════════════════════════
+   ALERTS / INFO / WARNING / SUCCESS / ERROR
+═══════════════════════════════════════════════ */
+.stAlert, [data-testid="stAlert"] {
+    border-radius: 10px !important;
     background: #1e293b !important;
-    border-color: #334155 !important;
-    color: #e2e8f0 !important;
+    border-left-width: 4px !important;
 }
+.stAlert [data-testid="stMarkdownContainer"] * { color: #e2e8f0 !important; }
+div[data-testid="stInfo"]    { border-left-color: #38bdf8 !important; }
+div[data-testid="stWarning"] { border-left-color: #fbbf24 !important; }
+div[data-testid="stError"]   { border-left-color: #f87171 !important; }
+div[data-testid="stSuccess"] { border-left-color: #34d399 !important; }
 
-/* ── Divider ─────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════
+   FILE UPLOADER
+═══════════════════════════════════════════════ */
+[data-testid="stFileUploader"],
+[data-testid="stFileUploader"] section {
+    background: #1e293b !important;
+    border: 1px dashed #334155 !important;
+    border-radius: 10px !important;
+    color: #94a3b8 !important;
+}
+[data-testid="stFileUploader"] * { color: #94a3b8 !important; }
+[data-testid="stFileUploader"] button { color: #a5b4fc !important; }
+
+/* ═══════════════════════════════════════════════
+   PROGRESS / SPINNER / DIVIDER
+═══════════════════════════════════════════════ */
+.stProgress > div > div { background: linear-gradient(90deg,#4f46e5,#818cf8) !important; }
+.stProgress > div { background: #1e293b !important; }
 hr { border-color: #1e293b !important; }
+.stSpinner > div { border-top-color: #6366f1 !important; }
 
-/* ── Section header gradient text ───────────────────────── */
+/* ═══════════════════════════════════════════════
+   CAPTION / SMALL TEXT
+═══════════════════════════════════════════════ */
+.stCaption, small, .stMarkdown small,
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] * { color: #64748b !important; }
+
+/* ═══════════════════════════════════════════════
+   SECTION HEADER
+═══════════════════════════════════════════════ */
 .section-header {
     background: linear-gradient(90deg, #38bdf8, #818cf8);
     -webkit-background-clip: text;
@@ -213,66 +302,55 @@ hr { border-color: #1e293b !important; }
     font-size: 1.4rem; font-weight: 700; margin-bottom: 1rem;
 }
 
-/* ── Activity item ──────────────────────────────────────── */
+/* ═══════════════════════════════════════════════
+   COMPONENTS (activity, quota, badges, legend)
+═══════════════════════════════════════════════ */
 .activity-item {
-    padding: 10px 14px;
-    border-left: 3px solid #6366f1;
-    background: #1e293b;
-    border-radius: 0 8px 8px 0;
-    margin-bottom: 8px;
-    font-size: 0.87rem;
-    color: #cbd5e1;
+    padding: 10px 14px; border-left: 3px solid #6366f1;
+    background: #1e293b; border-radius: 0 8px 8px 0;
+    margin-bottom: 8px; font-size: 0.87rem; color: #cbd5e1;
 }
+.quota-bar-wrap {
+    background: #1e293b; border-radius: 999px;
+    height: 10px; margin: 4px 0; border: 1px solid #334155;
+}
+.quota-bar-fill { height: 10px; border-radius: 999px; transition: width 0.4s; }
 
-/* ── Quota bar ──────────────────────────────────────────── */
-.quota-bar-wrap { background:#1e293b; border-radius:999px; height:10px; margin:4px 0; border: 1px solid #334155; }
-.quota-bar-fill { height:10px; border-radius:999px; transition: width 0.4s; }
-
-/* ── Badges ─────────────────────────────────────────────── */
 .badge-green  { background:#14532d; color:#86efac; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
 .badge-yellow { background:#713f12; color:#fde68a; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
 .badge-red    { background:#7f1d1d; color:#fca5a5; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
 .badge-blue   { background:#1e3a5f; color:#93c5fd; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
 .badge-gray   { background:#1e293b; color:#94a3b8; padding:2px 10px; border-radius:999px; font-size:0.78rem; font-weight:600; }
 
-/* ── Leave legend boxes ─────────────────────────────────── */
 .legend-box {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 12px; border-radius: 6px;
-    font-size: 0.82rem; font-weight: 700;
-    margin: 3px; border: 1px solid rgba(255,255,255,0.1);
+    padding: 5px 13px; border-radius: 7px;
+    font-size: 0.83rem; font-weight: 700;
+    margin: 3px; border: 1px solid rgba(255,255,255,0.12);
+    letter-spacing: 0.01em;
 }
 .leg-ok     { background:#14532d; color:#86efac; }
 .leg-hol    { background:#374151; color:#d1d5db; }
 .leg-sick   { background:#7f1d1d; color:#fca5a5; }
 .leg-pers   { background:#713f12; color:#fde68a; }
 .leg-vac    { background:#1e3a5f; color:#93c5fd; }
-.leg-travel { background:#14532d; color:#6ee7b7; }
+.leg-travel { background:#064e3b; color:#6ee7b7; }
 .leg-late   { background:#92400e; color:#fcd34d; }
 .leg-absent { background:#450a0a; color:#f87171; }
 .leg-forgot { background:#2e1065; color:#c4b5fd; }
-.leg-slash  { background:#1e293b; color:#475569; }
+.leg-slash  { background:#1e293b; color:#64748b; }
 
-/* ── File uploader ──────────────────────────────────────── */
-[data-testid="stFileUploader"] {
-    background: #1e293b !important;
-    border: 1px dashed #334155 !important;
-    border-radius: 10px !important;
-}
-
-/* ── Caption / small text ───────────────────────────────── */
-.stCaption, small { color: #64748b !important; }
-
-/* ── Spinner ────────────────────────────────────────────── */
-.stSpinner > div { border-top-color: #6366f1 !important; }
-
-/* ── Responsive ─────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════
+   RESPONSIVE
+═══════════════════════════════════════════════ */
 @media (max-width: 768px) {
     div[data-testid="metric-container"] { margin-bottom: 8px; }
     .block-container { padding: 0.75rem !important; }
 }
 </style>
 """
+
+
 
 # ===========================
 # 🔐 App Init
