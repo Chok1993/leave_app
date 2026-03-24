@@ -1608,245 +1608,212 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 use_container_width=True, height=500,
             )
 
+
     # ════════════════════════════════════════════════════════
-    # Tab 2: ทะเบียนคุมวันลา รายบุคคล
+    # Tab 2: ทะเบียนคุมวันลา รายบุคคล (v2 - generate_leave_register)
     # ════════════════════════════════════════════════════════
     with tab_person:
-        col_p1, col_p2 = st.columns([2, 1])
-        with col_p1:
-            sel_person = st.selectbox("เลือกบุคลากร", all_names, key="reg_person")
-        with col_p2:
-            today_y = dt.date.today().year
-            # ปีงบประมาณไทย: ต.ค. ปีก่อน – ก.ย. ปีนี้
-            cur_fy = today_y if dt.date.today().month >= 10 else today_y - 1
-            fy_opts = list(range(cur_fy, cur_fy - 4, -1))
-            sel_fy  = st.selectbox("ปีงบประมาณ (พ.ศ.)", [y + 543 for y in fy_opts], key="reg_fy")
-        fy_ad = sel_fy - 543
+        import calendar as _cal
 
-        # ข้อมูลบุคลากร
+        # ── helper functions ────────────────────────────────
+        def generate_leave_register(df_daily: pd.DataFrame, person_name: str,
+                                    fiscal_year_be: int, selected_months: list) -> pd.DataFrame:
+            """สร้างตาราง matrix 1-31 สำหรับทะเบียนคุมวันลา"""
+            fy_ad = fiscal_year_be - 543
+            all_months_data = [
+                ("ตุลาคม",    10, fy_ad - 1),
+                ("พฤศจิกายน", 11, fy_ad - 1),
+                ("ธันวาคม",   12, fy_ad - 1),
+                ("มกราคม",     1, fy_ad),
+                ("กุมภาพันธ์", 2, fy_ad),
+                ("มีนาคม",     3, fy_ad),
+                ("เมษายน",     4, fy_ad),
+                ("พฤษภาคม",    5, fy_ad),
+                ("มิถุนายน",   6, fy_ad),
+                ("กรกฎาคม",    7, fy_ad),
+                ("สิงหาคม",    8, fy_ad),
+                ("กันยายน",    9, fy_ad),
+            ]
+            months_data = all_months_data if "ทั้งหมด (12 เดือน)" in selected_months else [
+                m for m in all_months_data if m[0] in selected_months
+            ]
+
+            df_p = df_daily[df_daily["ชื่อพนักงาน"] == person_name].copy()
+            if not df_p.empty:
+                df_p["วันที่"] = pd.to_datetime(df_p["วันที่"])
+                df_p["day"]   = df_p["วันที่"].dt.day
+                df_p["month"] = df_p["วันที่"].dt.month
+                df_p["year"]  = df_p["วันที่"].dt.year
+
+                def _sym(status):
+                    s = str(status)
+                    if "วันหยุด" in s: return "X"
+                    if "ลาป่วย"  in s: return "ป"
+                    if "ลากิจ"   in s: return "ก"
+                    if "ลาพักผ่อน" in s: return "พ"
+                    if "ลาคลอด"  in s: return "ค"
+                    if "ไปราชการ" in s: return "มอ"
+                    if "มาสาย"   in s: return "ส"
+                    if "ขาดงาน"  in s: return "ข"
+                    if "ลืมสแกน" in s: return "-"
+                    return ""
+                df_p["symbol"] = df_p["สถานะ"].apply(_sym)
+            else:
+                df_p = pd.DataFrame(columns=["day","month","year","symbol"])
+
+            matrix_data = []
+            for m_name, m_num, m_year in months_data:
+                max_days = _cal.monthrange(m_year, m_num)[1]
+                df_m = df_p[(df_p["month"] == m_num) & (df_p["year"] == m_year)]
+                row = {"เดือน": m_name}
+                for d in range(1, 32):
+                    if d > max_days:
+                        row[str(d)] = "/"
+                    else:
+                        vals = df_m[df_m["day"] == d]["symbol"].values
+                        row[str(d)] = vals[0] if len(vals) > 0 else ""
+                row.update({
+                    "ป่วย(วัน)":      len(df_m[df_m["symbol"] == "ป"]),
+                    "กิจ(วัน)":       len(df_m[df_m["symbol"] == "ก"]),
+                    "พักผ่อน(วัน)":   len(df_m[df_m["symbol"] == "พ"]),
+                    "ขาด(วัน)":       len(df_m[df_m["symbol"] == "ข"]),
+                    "สาย(ครั้ง)":     len(df_m[df_m["symbol"] == "ส"]),
+                    "ลืมสแกน(ครั้ง)": len(df_m[df_m["symbol"] == "-"]),
+                })
+                matrix_data.append(row)
+            df_mat = pd.DataFrame(matrix_data)
+            if not df_mat.empty:
+                df_mat = df_mat.set_index("เดือน")
+            return df_mat
+
+        def style_leave_register(df: pd.DataFrame):
+            """ตกแต่งสีตาราง"""
+            if df.empty: return df
+            stat_styles = {
+                "ป่วย(วัน)":       "background-color:#fff59d;color:black;font-weight:bold",
+                "กิจ(วัน)":        "background-color:#fff59d;color:black;font-weight:bold",
+                "พักผ่อน(วัน)":    "background-color:#fff59d;color:black;font-weight:bold",
+                "ขาด(วัน)":        "background-color:#ffcc80;color:black",
+                "สาย(ครั้ง)":      "background-color:#bbdefb;color:black",
+                "ลืมสแกน(ครั้ง)":  "background-color:#f48fb1;color:black",
+            }
+            def apply_col_style(col):
+                return [stat_styles.get(col.name, "")] * len(col)
+            def color_sym(val):
+                if val == "X":   return "color:#9e9e9e"
+                if val in ("ป","ก","พ","ค","มอ"): return "color:#1565c0;font-weight:bold"
+                if val in ("ส","ข","-"): return "color:#d84315;font-weight:bold"
+                if val == "/":   return "color:#e0e0e0"
+                return ""
+            day_subset = [str(i) for i in range(1, 32) if str(i) in df.columns]
+            return (df.style
+                    .apply(apply_col_style, axis=0)
+                    .applymap(color_sym, subset=day_subset)
+                    .set_properties(**{"text-align":"center","border":"1px solid #eeeeee"}))
+
+        # ── UI ──────────────────────────────────────────────
+        col_r1, col_r2, col_r3 = st.columns([1, 1, 2])
+        with col_r1:
+            today_y     = dt.date.today().year + 543
+            fy_options  = [today_y - 1, today_y, today_y + 1]
+            reg_year    = st.selectbox("ปีงบประมาณ (พ.ศ.)", fy_options,
+                                       index=1, key="reg_year")
+        with col_r2:
+            reg_person  = st.selectbox("เลือกบุคลากร", all_names, key="reg_person")
+        with col_r3:
+            month_opts  = [
+                "ทั้งหมด (12 เดือน)",
+                "ตุลาคม","พฤศจิกายน","ธันวาคม","มกราคม","กุมภาพันธ์","มีนาคม",
+                "เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน",
+            ]
+            reg_months  = st.multiselect("เดือนที่ต้องการแสดง", month_opts,
+                                          default=["ทั้งหมด (12 เดือน)"], key="reg_months")
+
+        # ── ข้อมูลบุคลากร ──────────────────────────────────
         person_info = {}
-        if not df_staff.empty and sel_person:
-            row_s = df_staff[df_staff["ชื่อ-สกุล"] == sel_person]
+        if not df_staff.empty and reg_person:
+            row_s = df_staff[df_staff["ชื่อ-สกุล"] == reg_person]
             if not row_s.empty:
                 person_info = row_s.iloc[0].to_dict()
 
         st.markdown(f"""
-<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 18px;margin-bottom:12px">
-<b>ทะเบียนคุมวันลา &nbsp; ปีงบประมาณ พ.ศ. {sel_fy}</b><br>
-ชื่อ &nbsp;<b>{sel_person}</b> &nbsp;&nbsp;
-ตำแหน่ง &nbsp;<b>{person_info.get('ตำแหน่ง','—')}</b> &nbsp;&nbsp;
-กลุ่มงาน &nbsp;<b>{person_info.get('กลุ่มงาน','—')}</b>
+<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 16px;margin-bottom:10px">
+<b>ทะเบียนคุมวันลา &nbsp; ปีงบประมาณ พ.ศ. {reg_year}</b><br>
+ชื่อ &nbsp;<b>{reg_person}</b> &nbsp;&nbsp;
+ตำแหน่ง &nbsp;<b>{person_info.get("ตำแหน่ง","—")}</b> &nbsp;&nbsp;
+กลุ่มงาน &nbsp;<b>{person_info.get("กลุ่มงาน","—")}</b>
 </div>
 """, unsafe_allow_html=True)
 
-        # เดือนในปีงบประมาณ: ต.ค.ปีก่อน – ก.ย.ปีนี้
-        FY_MONTHS = [
-            (fy_ad,     10, "ตุลาคม"),
-            (fy_ad,     11, "พฤศจิกายน"),
-            (fy_ad,     12, "ธันวาคม"),
-            (fy_ad + 1,  1, "มกราคม"),
-            (fy_ad + 1,  2, "กุมภาพันธ์"),
-            (fy_ad + 1,  3, "มีนาคม"),
-            (fy_ad + 1,  4, "เมษายน"),
-            (fy_ad + 1,  5, "พฤษภาคม"),
-            (fy_ad + 1,  6, "มิถุนายน"),
-            (fy_ad + 1,  7, "กรกฎาคม"),
-            (fy_ad + 1,  8, "สิงหาคม"),
-            (fy_ad + 1,  9, "กันยายน"),
-        ]
+        if st.button("📊 สร้างทะเบียนคุม", type="primary", key="btn_gen_reg"):
+            if not reg_months:
+                st.warning("⚠️ กรุณาเลือกเดือนอย่างน้อย 1 เดือน")
+            else:
+                with st.spinner("กำลังดึงข้อมูล..."):
+                    # สร้าง df_result จากข้อมูล cache
+                    fy_ad   = reg_year - 543
+                    fy_months_range = pd.date_range(
+                        dt.date(fy_ad - 1, 10, 1),
+                        dt.date(fy_ad, 9, 30), freq="D"
+                    )
+                    holiday_fy_set = set()
+                    for yr in {fy_ad - 1, fy_ad}:
+                        holiday_fy_set.update(get_holiday_dates(yr))
 
-        holiday_fy = set()
-        for yr in {fy_ad, fy_ad+1}:
-            holiday_fy.update(get_holiday_dates(yr))
+                    recs = []
+                    for d in fy_months_range:
+                        d_date   = d.date()
+                        stype, sval = _get_day_status(reg_person, d_date, d.weekday())
+                        att_row  = att_dict.get((reg_person, d_date))
+                        status   = {
+                            "leave":   f"ลา ({sval})",
+                            "travel":  "ไปราชการ",
+                            "weekend": "วันหยุด",
+                            "absent":  "ขาดงาน",
+                            "forgot":  "ลืมสแกน",
+                            "late":    "มาสาย",
+                            "ok":      "มาปกติ",
+                        }.get(stype, "ขาดงาน")
+                        if d_date in holiday_fy_set and stype not in ("leave","travel"):
+                            status = "วันหยุด"
+                        recs.append({"ชื่อพนักงาน": reg_person, "วันที่": d_date, "สถานะ": status})
+                    df_result_reg = pd.DataFrame(recs)
 
-        # สัญลักษณ์
-        SYM = {
-            "ok":      "×",
-            "late":    "×",     # มาสายแต่มาจริง → ×  (สายนับแยกใน summary)
-            "forgot":  "?",
-            "absent":  "",
-            "travel":  "มอ",
-            "leave_ลาป่วย":      "ป",
-            "leave_ลากิจส่วนตัว": "ก",
-            "leave_ลากิจ":        "ก",
-            "leave_ลาพักผ่อน":    "พ",
-            "leave_ลาคลอดบุตร":   "ค",
-            "leave_ลาอุปสมบท":    "บ",
-            "weekend": "",
-            "holiday": "ห",
-        }
+                    df_register = generate_leave_register(
+                        df_result_reg, reg_person, reg_year, reg_months
+                    )
 
-        def _sym(stype, sval):
-            if stype == "leave":
-                return SYM.get(f"leave_{sval}", "ล")
-            return SYM.get(stype, "")
+                if df_register.empty:
+                    st.info(f"ไม่พบข้อมูลของ {reg_person} ในช่วงเวลาที่เลือก")
+                else:
+                    st.dataframe(
+                        style_leave_register(df_register),
+                        use_container_width=True, height=520,
+                    )
 
-        # สร้าง grid ทีละเดือน
-        rows_all = []
-        total = {k: 0 for k in ["sick","sick_h","personal","personal_h","absent",
-                                  "late_cnt","vacation","vacation_h","no_in","no_out"]}
-
-        for (yr, mo, mo_name) in FY_MONTHS:
-            try:
-                month_days = pd.date_range(dt.date(yr, mo, 1),
-                                           dt.date(yr, mo, 1) + pd.offsets.MonthEnd(0), freq="D")
-            except Exception:
-                continue
-
-            day_syms = {}  # day(1-31) → symbol
-            m_sick = m_sick_h = m_pers = m_pers_h = 0
-            m_absent = m_late = m_vac = m_vac_h = m_no_in = m_no_out = 0
-
-            for d in month_days:
-                dd      = d.date()
-                day_num = d.day
-                is_hol  = dd in holiday_fy
-
-                if d.weekday() >= 5:
-                    day_syms[day_num] = ""
-                    continue
-                if is_hol:
-                    day_syms[day_num] = "ห"
-                    continue
-
-                stype, sval = _get_day_status(sel_person, dd, d.weekday())
-                sym = _sym(stype, sval)
-                day_syms[day_num] = sym
-
-                # นับสถิติ
-                if stype == "leave":
-                    if sval in ("ลาป่วย",):
-                        m_sick += 1
-                    elif sval in ("ลากิจส่วนตัว","ลากิจ"):
-                        m_pers += 1
-                    elif sval in ("ลาพักผ่อน",):
-                        m_vac += 1
-                elif stype == "absent":
-                    m_absent += 1
-                elif stype == "late":
-                    m_late += 1
-                    att_row = att_dict.get((sel_person, dd))
-                    if att_row is not None:
-                        t_out = parse_time(att_row.get("เวลาออก",""))
-                        if not t_out: m_no_out += 1
-                elif stype == "forgot":
-                    att_row = att_dict.get((sel_person, dd))
-                    if att_row is not None:
-                        t_in  = parse_time(att_row.get("เวลาเข้า",""))
-                        t_out = parse_time(att_row.get("เวลาออก",""))
-                        if not t_in:  m_no_in  += 1
-                        if not t_out: m_no_out += 1
-                elif stype == "ok":
-                    att_row = att_dict.get((sel_person, dd))
-                    if att_row is not None:
-                        t_out = parse_time(att_row.get("เวลาออก",""))
-                        if not t_out: m_no_out += 1
-
-            # สะสมรวม
-            total["sick"]       += m_sick
-            total["personal"]   += m_pers
-            total["absent"]     += m_absent
-            total["late_cnt"]   += m_late
-            total["vacation"]   += m_vac
-            total["no_in"]      += m_no_in
-            total["no_out"]     += m_no_out
-
-            # สร้าง row dict
-            row = {"เดือน": mo_name}
-            for d_num in range(1, 32):
-                row[str(d_num)] = day_syms.get(d_num, "")
-            row.update({
-                "ป่วย_วัน":     m_sick,
-                "ป่วย_0.5":    m_sick_h,
-                "ป่วย_รวม":    m_sick + m_sick_h * 0.5,
-                "กิจ_วัน":     m_pers,
-                "กิจ_0.5":    m_pers_h,
-                "กิจ_รวม":    m_pers + m_pers_h * 0.5,
-                "ขาด_วัน":    m_absent,
-                "ขาด_0.5":   0,
-                "ขาด_รวม":   m_absent,
-                "สาย_ครั้ง":  m_late,
-                "พัก_วัน":    m_vac,
-                "พัก_0.5":   m_vac_h,
-                "พัก_รวม":   m_vac + m_vac_h * 0.5,
-                "ไม่สแกนเข้า": m_no_in,
-                "ไม่สแกนออก": m_no_out,
-            })
-            rows_all.append(row)
-
-        # แถวรวม
-        row_total = {"เดือน": "รวมทั้งสิ้น"}
-        for d_num in range(1, 32): row_total[str(d_num)] = ""
-        row_total.update({
-            "ป่วย_วัน":    total["sick"],      "ป่วย_0.5":   0,  "ป่วย_รวม":   total["sick"],
-            "กิจ_วัน":    total["personal"],   "กิจ_0.5":    0,  "กิจ_รวม":    total["personal"],
-            "ขาด_วัน":   total["absent"],      "ขาด_0.5":    0,  "ขาด_รวม":    total["absent"],
-            "สาย_ครั้ง": total["late_cnt"],
-            "พัก_วัน":   total["vacation"],    "พัก_0.5":    0,  "พัก_รวม":    total["vacation"],
-            "ไม่สแกนเข้า": total["no_in"],   "ไม่สแกนออก": total["no_out"],
-        })
-        rows_all.append(row_total)
-
-        df_reg = pd.DataFrame(rows_all)
-
-        # แสดงผล: แบ่งเป็น 2 ส่วน — grid วันที่ + สรุปสถิติ
-        day_cols    = ["เดือน"] + [str(i) for i in range(1, 32)]
-        stat_cols   = ["เดือน","ป่วย_วัน","ป่วย_0.5","ป่วย_รวม",
-                       "กิจ_วัน","กิจ_0.5","กิจ_รวม",
-                       "ขาด_วัน","ขาด_0.5","ขาด_รวม",
-                       "สาย_ครั้ง",
-                       "พัก_วัน","พัก_0.5","พัก_รวม",
-                       "ไม่สแกนเข้า","ไม่สแกนออก"]
-
-        def _style_reg(val):
-            s = str(val)
-            if s == "ป":  return "background:#fde8e8;color:#991b1b;font-weight:600;text-align:center"
-            if s == "พ":  return "background:#dbeafe;color:#1e40af;font-weight:600;text-align:center"
-            if s == "ก":  return "background:#fef9c3;color:#854d0e;font-weight:600;text-align:center"
-            if s == "ค":  return "background:#f3e8ff;color:#6b21a8;font-weight:600;text-align:center"
-            if s == "มอ": return "background:#d1fae5;color:#065f46;font-weight:600;text-align:center"
-            if s == "×":  return "text-align:center;color:#374151"
-            if s == "ห":  return "background:#f1f5f9;color:#94a3b8;text-align:center"
-            if s == "?":  return "background:#fff7ed;color:#c2410c;text-align:center"
-            return "text-align:center"
-
-        st.markdown("**📅 ตารางประจำเดือน (สัญลักษณ์)**")
-        st.dataframe(
-            df_reg[day_cols].style.applymap(_style_reg),
-            use_container_width=True, height=480,
-        )
-
-        st.markdown("**📊 สรุปสถิติ**")
-        st.dataframe(df_reg[stat_cols], use_container_width=True, height=480)
-
-        # สรุป KPI
-        st.markdown("---")
-        k1,k2,k3,k4,k5 = st.columns(5)
-        k1.metric("🤒 ลาป่วยรวม",    f"{total['sick']} วัน")
-        k2.metric("📋 ลากิจรวม",      f"{total['personal']} วัน")
-        k3.metric("🏖️ ลาพักผ่อน",    f"{total['vacation']} วัน")
-        k4.metric("❌ ขาดงาน",        f"{total['absent']} วัน")
-        k5.metric("⏰ มาสาย",         f"{total['late_cnt']} ครั้ง")
-
-        # Export Excel
-        if st.button("📥 Export ทะเบียนคุมวันลา Excel", key="export_reg"):
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                df_reg[day_cols].to_excel(writer, sheet_name="ตารางวันที่", index=False)
-                df_reg[stat_cols].to_excel(writer, sheet_name="สรุปสถิติ", index=False)
-            fname = f"ทะเบียนคุมวันลา_{sel_person}_{sel_fy}.xlsx"
-            st.download_button("⬇️ ดาวน์โหลด", buf.getvalue(), fname, mime=EXCEL_MIME)
+                    # Export
+                    buf2 = io.BytesIO()
+                    with pd.ExcelWriter(buf2, engine="xlsxwriter") as writer:
+                        df_register.to_excel(writer, sheet_name="ทะเบียนคุมวันลา")
+                    st.download_button(
+                        "📥 ดาวน์โหลด Excel ทะเบียนคุม",
+                        buf2.getvalue(),
+                        f"Leave_Register_{reg_year}_{reg_person}.xlsx",
+                        mime=EXCEL_MIME,
+                        key="dl_reg",
+                    )
 
         st.markdown("""
-**คำอธิบายสัญลักษณ์:** &nbsp;
-`×` = ปฏิบัติงาน &nbsp;|&nbsp;
+**สัญลักษณ์:** &nbsp;
+`X` = วันหยุด &nbsp;|&nbsp;
 `ป` = ลาป่วย &nbsp;|&nbsp;
 `ก` = ลากิจ &nbsp;|&nbsp;
 `พ` = ลาพักผ่อน &nbsp;|&nbsp;
 `มอ` = ไปราชการ &nbsp;|&nbsp;
-`ห` = วันหยุด &nbsp;|&nbsp;
-`?` = ลืมสแกน &nbsp;|&nbsp;
-ช่องว่าง = ขาดงาน/วันหยุดสุดสัปดาห์
+`ส` = มาสาย &nbsp;|&nbsp;
+`ข` = ขาดงาน &nbsp;|&nbsp;
+`-` = ลืมสแกน &nbsp;|&nbsp;
+`/` = ไม่มีวันนี้ในเดือน
 """)
 
 
