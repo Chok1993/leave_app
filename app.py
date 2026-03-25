@@ -1465,16 +1465,28 @@ def get_holiday_name(d: dt.date, holiday_df: pd.DataFrame) -> str:
     return ""
 
 
-def _get_day_status(name, d_date, d_weekday):
-    """คืนสถานะของ 1 วัน สำหรับบุคลากร 1 คน"""
+def _get_day_status(name, d_date, d_weekday, holiday_set=None):
+    """
+    คืนสถานะของ 1 วัน สำหรับบุคลากร 1 คน
+    ลำดับความสำคัญ:
+      1. วันหยุด ส.-อา.            → weekend
+      2. วันหยุดนักขัตฤกษ์/พิเศษ  → holiday  (ไม่นับเป็นวันลา)
+      3. ลา
+      4. ไปราชการ
+      5. ข้อมูลสแกนนิ้ว
+    """
+    # 1. เสาร์-อาทิตย์ ไม่นับเป็นวันลาแม้อยู่ในช่วงลา
+    if d_weekday >= 5:
+        return "weekend", ""
+    # 2. วันหยุดนักขัตฤกษ์/พิเศษ ไม่นับเป็นวันลา
+    if holiday_set and d_date in holiday_set:
+        return "holiday", ""
     for ls, le, ltype in leave_index.get(name, []):
         if ls <= d_date <= le:
             return "leave", ltype
     for ts, te, proj in travel_index.get(name, []):
         if ts <= d_date <= te:
             return "travel", proj
-    if d_weekday >= 5:
-        return "weekend", ""
     att_row = att_dict.get((name, d_date))
     if att_row is not None:
         t_in  = parse_time(att_row.get("เวลาเข้า",""))
@@ -1488,7 +1500,8 @@ def _get_day_status(name, d_date, d_weekday):
 
 
 def generate_leave_register(df_daily: pd.DataFrame, person_name: str,
-                            fiscal_year_be: int, selected_months: list) -> pd.DataFrame:
+                            fiscal_year_be: int, selected_months: list,
+                            holiday_set: set = None) -> pd.DataFrame:
     """สร้างตาราง matrix 1-31 สำหรับทะเบียนคุมวันลา"""
     fy_ad = fiscal_year_be - 543
     all_months_data = [
@@ -1541,15 +1554,45 @@ def generate_leave_register(df_daily: pd.DataFrame, person_name: str,
             if d > max_days:
                 row[str(d)] = "/"
             else:
+                # ✅ เสาร์-อาทิตย์ → X
+                try:
+                    d_obj = dt.date(m_year, m_num, d)
+                    day_of_week = d_obj.weekday()
+                    if day_of_week >= 5:
+                        row[str(d)] = "X"
+                        continue
+                    # ✅ วันหยุดนักขัตฤกษ์ → H
+                    if holiday_set and d_obj in holiday_set:
+                        row[str(d)] = "H"
+                        continue
+                except ValueError:
+                    row[str(d)] = "/"
+                    continue
                 vals = df_m[df_m["day"] == d]["symbol"].values
                 row[str(d)] = vals[0] if len(vals) > 0 else ""
+
+        # ✅ นับเฉพาะวันทำการ ไม่รวม ส.-อา. และวันหยุดนักขัตฤกษ์
+        def _count_workday_symbol(sym):
+            count = 0
+            for _, r in df_m[df_m["symbol"] == sym].iterrows():
+                try:
+                    d_obj = dt.date(m_year, m_num, int(r["day"]))
+                    if d_obj.weekday() >= 5:
+                        continue  # ส.-อา. ไม่นับ
+                    if holiday_set and d_obj in holiday_set:
+                        continue  # วันหยุดนักขัตฤกษ์ ไม่นับ
+                    count += 1
+                except (ValueError, TypeError):
+                    pass
+            return count
+
         row.update({
-            "ป่วย(วัน)":      len(df_m[df_m["symbol"] == "ป"]),
-            "กิจ(วัน)":       len(df_m[df_m["symbol"] == "ก"]),
-            "พักผ่อน(วัน)":   len(df_m[df_m["symbol"] == "พ"]),
-            "ขาด(วัน)":       len(df_m[df_m["symbol"] == "ข"]),
-            "สาย(ครั้ง)":     len(df_m[df_m["symbol"] == "ส"]),
-            "ลืมสแกน(ครั้ง)": len(df_m[df_m["symbol"] == "-"]),
+            "ป่วย(วัน)":      _count_workday_symbol("ป"),
+            "กิจ(วัน)":       _count_workday_symbol("ก"),
+            "พักผ่อน(วัน)":   _count_workday_symbol("พ"),
+            "ขาด(วัน)":       _count_workday_symbol("ข"),
+            "สาย(ครั้ง)":     _count_workday_symbol("ส"),
+            "ลืมสแกน(ครั้ง)": _count_workday_symbol("-"),
         })
         matrix_data.append(row)
     df_mat = pd.DataFrame(matrix_data)
@@ -1572,7 +1615,8 @@ def style_leave_register(df: pd.DataFrame):
     def apply_col_style(col):
         return [stat_styles.get(col.name, "")] * len(col)
     def color_sym(val):
-        if val == "X":   return "color:#9e9e9e"
+        if val == "X":   return "color:#9e9e9e"                      # ส.-อา.
+        if val == "H":   return "color:#f59e0b;font-weight:bold"      # วันหยุดนักขัตฤกษ์ (สีทอง)
         if val in ("ป","ก","พ","ค","มอ"): return "color:#1565c0;font-weight:bold"
         if val in ("ส","ข","-"): return "color:#d84315;font-weight:bold"
         if val == "/":   return "color:#e0e0e0"
@@ -2149,22 +2193,23 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                     recs = []
                     for d in fy_months_range:
                         d_date = d.date()
-                        stype, sval = _get_day_status(reg_person, d_date, d.weekday())
+                        # ✅ ส่ง holiday_fy_set เพื่อให้วันหยุดไม่นับเป็นวันลา
+                        stype, sval = _get_day_status(reg_person, d_date, d.weekday(), holiday_fy_set)
                         status = {
                             "leave":   f"ลา ({sval})",
                             "travel":  "ไปราชการ",
                             "weekend": "วันหยุด",
+                            "holiday": "วันหยุด",   # วันหยุดนักขัตฤกษ์
                             "absent":  "ขาดงาน",
                             "forgot":  "ลืมสแกน",
                             "late":    "มาสาย",
                             "ok":      "มาปกติ",
                         }.get(stype, "ขาดงาน")
-                        if d_date in holiday_fy_set and stype not in ("leave","travel"):
-                            status = "วันหยุด"
                         recs.append({"ชื่อพนักงาน": reg_person, "วันที่": d_date, "สถานะ": status})
                     df_result_reg = pd.DataFrame(recs)
                     df_register   = generate_leave_register(
-                        df_result_reg, reg_person, reg_year, reg_months
+                        df_result_reg, reg_person, reg_year, reg_months,
+                        holiday_set=holiday_fy_set,
                     )
 
                 if df_register.empty:
@@ -2189,7 +2234,8 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
 <div style="color:#94a3b8;font-size:0.82rem;font-weight:700;margin-bottom:8px;letter-spacing:0.05em">คำอธิบายสัญลักษณ์</div>
 <div style="display:flex;flex-wrap:wrap;gap:6px">
   <span class="legend-box leg-ok">✓ มาปกติ</span>
-  <span class="legend-box leg-hol">X วันหยุด</span>
+  <span class="legend-box leg-hol">X วันหยุด ส.-อา.</span>
+  <span class="legend-box" style="background:#422006;color:#f59e0b;border:1px solid rgba(255,255,255,0.12)">H วันหยุดนักขัตฤกษ์</span>
   <span class="legend-box leg-sick">ป ลาป่วย</span>
   <span class="legend-box leg-pers">ก ลากิจ</span>
   <span class="legend-box leg-vac">พ ลาพักผ่อน</span>
