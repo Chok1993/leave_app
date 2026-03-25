@@ -2055,19 +2055,37 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
             reg_months = st.multiselect("เลือกเดือนที่ต้องการแสดง", month_opts,
                                          default=["ทั้งหมด (12 เดือน)"], key="reg_months")
 
-        # ── ข้อมูลบุคลากร ──────────────────────────────────
+        # ── ข้อมูลบุคลากร — fuzzy match ป้องกัน whitespace ────
         person_info = {}
         if not df_staff.empty and reg_person:
-            row_s = df_staff[df_staff["ชื่อ-สกุล"] == reg_person]
+            # normalize ทั้งสองฝั่งก่อนเปรียบเทียบ
+            reg_person_norm = str(reg_person).strip()
+            staff_names_norm = df_staff["ชื่อ-สกุล"].astype(str).str.strip()
+            row_s = df_staff[staff_names_norm == reg_person_norm]
+            if row_s.empty:
+                # ลอง contains ถ้า exact match ไม่เจอ
+                row_s = df_staff[staff_names_norm.str.contains(reg_person_norm, na=False)]
             if not row_s.empty:
                 person_info = row_s.iloc[0].to_dict()
 
+        # แยกบรรทัดเพื่อไม่ให้ข้อความล้น
+        _pos   = person_info.get("ตำแหน่ง","") or "—"
+        _grp   = person_info.get("กลุ่มงาน","") or "—"
+        _type  = person_info.get("ประเภทบุคลากร","") or ""
+
         st.markdown(f"""
-<div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 16px;margin-bottom:10px;color:#e2e8f0">
-<b>ทะเบียนคุมวันลา &nbsp; ปีงบประมาณ พ.ศ. {reg_year}</b><br>
-ชื่อ &nbsp;<b>{reg_person}</b> &nbsp;&nbsp;
-ตำแหน่ง &nbsp;<b>{person_info.get("ตำแหน่ง","—")}</b> &nbsp;&nbsp;
-กลุ่มงาน &nbsp;<b>{person_info.get("กลุ่มงาน","—")}</b>
+<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;
+            padding:14px 20px;margin-bottom:12px;line-height:2">
+  <div style="color:#94a3b8;font-size:0.78rem;font-weight:700;
+              letter-spacing:0.08em;margin-bottom:4px">ทะเบียนคุมวันลา &nbsp;|&nbsp; ปีงบประมาณ พ.ศ. {reg_year}</div>
+  <div style="font-size:1.05rem;font-weight:700;color:#f1f5f9">
+    {reg_person}
+    {"&nbsp;<span style='background:#4f46e5;color:white;font-size:0.72rem;padding:2px 8px;border-radius:999px;font-weight:600'>"+_type+"</span>" if _type else ""}
+  </div>
+  <div style="font-size:0.88rem;color:#cbd5e1;margin-top:2px;display:flex;flex-wrap:wrap;gap:16px">
+    <span>📌 ตำแหน่ง &nbsp;<b style="color:#e2e8f0">{_pos}</b></span>
+    <span>🏢 กลุ่มงาน &nbsp;<b style="color:#e2e8f0">{_grp}</b></span>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -2109,7 +2127,14 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
                 if df_register.empty:
                     st.info(f"ไม่พบข้อมูลของ {reg_person} ในช่วงเวลาที่เลือก")
                 else:
-                    st.markdown(f"**ทะเบียนคุมวันลา:** {reg_person} | **ปีงบประมาณ:** {reg_year}")
+                    st.markdown(f"""
+<div style="background:#0f2744;border-left:4px solid #6366f1;border-radius:0 8px 8px 0;
+            padding:10px 16px;margin-bottom:8px">
+  <span style="color:#94a3b8;font-size:0.8rem">ทะเบียนคุมวันลา &nbsp;|&nbsp; ปีงบประมาณ พ.ศ. {reg_year}</span><br>
+  <span style="color:#f1f5f9;font-weight:700;font-size:0.95rem">{reg_person}</span>
+  &nbsp;&nbsp;<span style="color:#94a3b8;font-size:0.85rem">{_pos}</span>
+</div>
+""", unsafe_allow_html=True)
                     st.dataframe(
                         style_leave_register(df_register),
                         use_container_width=True, height=500,
