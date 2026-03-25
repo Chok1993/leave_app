@@ -2120,119 +2120,108 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
     # ════════════════════════════════════════════════════════
     with tab_person:
         import calendar as _cal
+        import zipfile as _zipfile
 
-        # ── helper functions ────────────────────────────────
-        # generate_leave_register moved to global scope
-        # style_leave_register moved to global scope
-        # ── UI ──────────────────────────────────────────────
-        col_r1, col_r2, col_r3 = st.columns([1, 1, 2])
+        # ── Controls ─────────────────────────────────────────
+        col_r1, col_r2, col_r3 = st.columns([1, 2, 2])
         with col_r1:
             today_y    = dt.date.today().year + 543
             fy_options = [today_y - 1, today_y, today_y + 1]
             reg_year   = st.selectbox("ปีงบประมาณ (พ.ศ.)", fy_options,
                                       index=1, key="reg_year")
         with col_r2:
-            reg_person = st.selectbox("เลือกบุคลากร", all_names, key="reg_person")
+            reg_persons = st.multiselect(
+                "👥 เลือกบุคลากร (เลือกได้หลายคน)",
+                all_names, key="reg_persons",
+                placeholder="พิมพ์ค้นหาหรือเลือกจากรายการ...",
+            )
         with col_r3:
             month_opts = [
                 "ทั้งหมด (12 เดือน)",
                 "ตุลาคม","พฤศจิกายน","ธันวาคม","มกราคม","กุมภาพันธ์","มีนาคม",
                 "เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน",
             ]
-            reg_months = st.multiselect("เลือกเดือนที่ต้องการแสดง", month_opts,
-                                         default=["ทั้งหมด (12 เดือน)"], key="reg_months")
+            reg_months = st.multiselect(
+                "📅 เลือกเดือนที่ต้องการแสดง", month_opts,
+                default=["ทั้งหมด (12 เดือน)"], key="reg_months",
+            )
 
-        # ── ข้อมูลบุคลากร — fuzzy match ป้องกัน whitespace ────
-        person_info = {}
-        if not df_staff.empty and reg_person:
-            # normalize ทั้งสองฝั่งก่อนเปรียบเทียบ
-            reg_person_norm = str(reg_person).strip()
-            staff_names_norm = df_staff["ชื่อ-สกุล"].astype(str).str.strip()
-            row_s = df_staff[staff_names_norm == reg_person_norm]
-            if row_s.empty:
-                # ลอง contains ถ้า exact match ไม่เจอ
-                row_s = df_staff[staff_names_norm.str.contains(reg_person_norm, na=False)]
-            if not row_s.empty:
-                person_info = row_s.iloc[0].to_dict()
+        # ── summary bar ──────────────────────────────────────
+        n_sel = len(reg_persons)
+        if n_sel == 0:
+            st.info("💡 กรุณาเลือกบุคลากรอย่างน้อย 1 คน")
+        else:
+            st.markdown(
+                f"<div style='background:#1e293b;border:1px solid #334155;"
+                f"border-radius:8px;padding:10px 16px;color:#94a3b8;font-size:0.9rem'>"
+                f"เลือกแล้ว <b style='color:#a5b4fc'>{n_sel} คน</b> &nbsp;|&nbsp; "
+                f"ปีงบประมาณ <b style='color:#a5b4fc'>พ.ศ. {reg_year}</b> &nbsp;|&nbsp; "
+                f"เดือน <b style='color:#a5b4fc'>"
+                f"{'ทั้งหมด' if 'ทั้งหมด (12 เดือน)' in reg_months else ', '.join(reg_months)}"
+                f"</b></div>",
+                unsafe_allow_html=True,
+            )
 
-        # แยกบรรทัดเพื่อไม่ให้ข้อความล้น
-        _pos   = person_info.get("ตำแหน่ง","") or "—"
-        _grp   = person_info.get("กลุ่มงาน","") or "—"
-        _type  = person_info.get("ประเภทบุคลากร","") or ""
-
-        st.markdown(f"""
-<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;
-            padding:14px 20px;margin-bottom:12px;line-height:2">
-  <div style="color:#94a3b8;font-size:0.78rem;font-weight:700;
-              letter-spacing:0.08em;margin-bottom:4px">ทะเบียนคุมวันลา &nbsp;|&nbsp; ปีงบประมาณ พ.ศ. {reg_year}</div>
-  <div style="font-size:1.05rem;font-weight:700;color:#f1f5f9">
-    {reg_person}
-    {"&nbsp;<span style='background:#4f46e5;color:white;font-size:0.72rem;padding:2px 8px;border-radius:999px;font-weight:600'>"+_type+"</span>" if _type else ""}
-  </div>
-  <div style="font-size:0.88rem;color:#cbd5e1;margin-top:2px;display:flex;flex-wrap:wrap;gap:16px">
-    <span>📌 ตำแหน่ง &nbsp;<b style="color:#e2e8f0">{_pos}</b></span>
-    <span>🏢 กลุ่มงาน &nbsp;<b style="color:#e2e8f0">{_grp}</b></span>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-
-        if st.button("📊 สร้างทะเบียนคุม", type="primary", key="btn_gen_reg"):
+        if st.button("📊 สร้างทะเบียนคุม", type="primary", key="btn_gen_reg",
+                     disabled=(n_sel == 0)):
             if not reg_months:
                 st.warning("⚠️ กรุณาเลือกเดือนอย่างน้อย 1 เดือน")
             else:
-                with st.spinner("กำลังดึงข้อมูล..."):
-                    fy_ad = reg_year - 543
-                    fy_months_range = pd.date_range(
-                        dt.date(fy_ad - 1, 10, 1),
-                        dt.date(fy_ad, 9, 30), freq="D"
-                    )
-                    holiday_fy_set = set()
-                    for yr in {fy_ad - 1, fy_ad}:
-                        holiday_fy_set.update(get_holiday_dates(yr))
+                # ── คำนวณ range + holidays ─────────────────
+                fy_ad = reg_year - 543
+                fy_months_range = pd.date_range(
+                    dt.date(fy_ad - 1, 10, 1),
+                    dt.date(fy_ad, 9, 30), freq="D"
+                )
+                holiday_fy_set = set()
+                for yr in {fy_ad - 1, fy_ad}:
+                    holiday_fy_set.update(get_holiday_dates(yr))
 
+                STATUS_MAP = {
+                    "leave":   lambda sv: f"ลา ({sv})",
+                    "travel":  lambda sv: "ไปราชการ",
+                    "weekend": lambda sv: "วันหยุด",
+                    "holiday": lambda sv: "วันหยุด",
+                    "absent":  lambda sv: "ขาดงาน",
+                    "forgot":  lambda sv: "ลืมสแกน",
+                    "late":    lambda sv: "มาสาย",
+                    "ok":      lambda sv: "มาปกติ",
+                }
+
+                prog = st.progress(0, text="กำลังสร้างทะเบียนคุม...")
+                all_registers = {}   # {name: df_register}
+
+                for idx, person in enumerate(reg_persons):
+                    prog.progress((idx + 1) / len(reg_persons),
+                                  text=f"กำลังประมวลผล {person} ({idx+1}/{len(reg_persons)})...")
                     recs = []
                     for d in fy_months_range:
-                        d_date = d.date()
-                        # ✅ ส่ง holiday_fy_set เพื่อให้วันหยุดไม่นับเป็นวันลา
-                        stype, sval = _get_day_status(reg_person, d_date, d.weekday(), holiday_fy_set)
-                        status = {
-                            "leave":   f"ลา ({sval})",
-                            "travel":  "ไปราชการ",
-                            "weekend": "วันหยุด",
-                            "holiday": "วันหยุด",   # วันหยุดนักขัตฤกษ์
-                            "absent":  "ขาดงาน",
-                            "forgot":  "ลืมสแกน",
-                            "late":    "มาสาย",
-                            "ok":      "มาปกติ",
-                        }.get(stype, "ขาดงาน")
-                        recs.append({"ชื่อพนักงาน": reg_person, "วันที่": d_date, "สถานะ": status})
-                    df_result_reg = pd.DataFrame(recs)
-                    df_register   = generate_leave_register(
-                        df_result_reg, reg_person, reg_year, reg_months,
+                        d_date  = d.date()
+                        stype, sval = _get_day_status(person, d_date, d.weekday(), holiday_fy_set)
+                        fn = STATUS_MAP.get(stype)
+                        status = fn(sval) if fn else "ขาดงาน"
+                        recs.append({"ชื่อพนักงาน": person, "วันที่": d_date, "สถานะ": status})
+
+                    df_r = pd.DataFrame(recs)
+                    df_reg = generate_leave_register(
+                        df_r, person, reg_year, reg_months,
                         holiday_set=holiday_fy_set,
                     )
+                    if not df_reg.empty:
+                        all_registers[person] = df_reg
 
-                if df_register.empty:
-                    st.info(f"ไม่พบข้อมูลของ {reg_person} ในช่วงเวลาที่เลือก")
+                prog.empty()
+
+                if not all_registers:
+                    st.warning("ไม่พบข้อมูลของบุคลากรที่เลือกในช่วงเวลานี้")
                 else:
-                    st.markdown(f"""
-<div style="background:#0f2744;border-left:4px solid #6366f1;border-radius:0 8px 8px 0;
-            padding:10px 16px;margin-bottom:8px">
-  <span style="color:#94a3b8;font-size:0.8rem">ทะเบียนคุมวันลา &nbsp;|&nbsp; ปีงบประมาณ พ.ศ. {reg_year}</span><br>
-  <span style="color:#f1f5f9;font-weight:700;font-size:0.95rem">{reg_person}</span>
-  &nbsp;&nbsp;<span style="color:#94a3b8;font-size:0.85rem">{_pos}</span>
-</div>
-""", unsafe_allow_html=True)
-                    st.dataframe(
-                        style_leave_register(df_register),
-                        use_container_width=True, height=500,
-                    )
+                    st.success(f"✅ สร้างทะเบียนคุมได้ {len(all_registers)} คน")
 
-                    # คำอธิบายสัญลักษณ์ — dark theme legend boxes
-                    st.markdown("""
-<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px 18px;margin-top:8px">
-<div style="color:#94a3b8;font-size:0.82rem;font-weight:700;margin-bottom:8px;letter-spacing:0.05em">คำอธิบายสัญลักษณ์</div>
-<div style="display:flex;flex-wrap:wrap;gap:6px">
+                    # ── Legend ─────────────────────────────
+                    LEGEND_HTML = """
+<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:12px 16px;margin:8px 0">
+<div style="color:#94a3b8;font-size:0.78rem;font-weight:700;margin-bottom:6px;letter-spacing:0.05em">คำอธิบายสัญลักษณ์</div>
+<div style="display:flex;flex-wrap:wrap;gap:5px">
   <span class="legend-box leg-ok">✓ มาปกติ</span>
   <span class="legend-box leg-hol">X วันหยุด ส.-อา.</span>
   <span class="legend-box" style="background:#422006;color:#f59e0b;border:1px solid rgba(255,255,255,0.12)">H วันหยุดนักขัตฤกษ์</span>
@@ -2244,23 +2233,113 @@ elif menu == "📅 ตรวจสอบการปฏิบัติงาน"
   <span class="legend-box leg-absent">ข ขาดราชการ</span>
   <span class="legend-box leg-forgot">- ลืมสแกนนิ้ว</span>
   <span class="legend-box leg-slash">/ ไม่มีวันนี้ในเดือน</span>
-</div>
-</div>
-""", unsafe_allow_html=True)
+</div></div>"""
 
-                    st.write("")  # เว้นบรรทัด
+                    # ── แสดงผล: 1 คน = แสดงตาราง / หลายคน = expander ──
+                    if len(all_registers) == 1:
+                        person = list(all_registers.keys())[0]
+                        df_reg = all_registers[person]
 
-                    # Export Excel
-                    buf2 = io.BytesIO()
-                    with pd.ExcelWriter(buf2, engine="xlsxwriter") as writer:
-                        df_register.to_excel(writer, sheet_name="ทะเบียนคุมวันลา")
-                    st.download_button(
-                        "📥 ดาวน์โหลด Excel ทะเบียนคุม",
-                        buf2.getvalue(),
-                        f"Leave_Register_{reg_year}_{reg_person}.xlsx",
-                        mime=EXCEL_MIME,
-                        key="dl_reg",
-                    )
+                        # header
+                        p_info = {}
+                        if not df_staff.empty:
+                            nm = df_staff["ชื่อ-สกุล"].astype(str).str.strip()
+                            rs = df_staff[nm == person.strip()]
+                            if not rs.empty: p_info = rs.iloc[0].to_dict()
+                        _pos = p_info.get("ตำแหน่ง","") or "—"
+
+                        st.markdown(
+                            f"<div style='background:#0f2744;border-left:4px solid #6366f1;"
+                            f"border-radius:0 8px 8px 0;padding:10px 16px;margin-bottom:8px'>"
+                            f"<span style='color:#94a3b8;font-size:0.8rem'>ทะเบียนคุมวันลา | พ.ศ. {reg_year}</span><br>"
+                            f"<span style='color:#f1f5f9;font-weight:700'>{person}</span>"
+                            f"&nbsp;&nbsp;<span style='color:#94a3b8;font-size:0.85rem'>{_pos}</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                        st.dataframe(style_leave_register(df_reg),
+                                     use_container_width=True, height=500)
+                        st.markdown(LEGEND_HTML, unsafe_allow_html=True)
+                        st.write("")
+
+                        buf_s = io.BytesIO()
+                        with pd.ExcelWriter(buf_s, engine="xlsxwriter") as w:
+                            df_reg.to_excel(w, sheet_name="ทะเบียนคุมวันลา")
+                        st.download_button(
+                            "📥 ดาวน์โหลด Excel",
+                            buf_s.getvalue(),
+                            f"ทะเบียนคุม_{reg_year}_{person}.xlsx",
+                            mime=EXCEL_MIME, key="dl_reg_single",
+                        )
+
+                    else:
+                        # ── หลายคน: expander แต่ละคน + ZIP ──
+                        for person, df_reg in all_registers.items():
+                            p_info = {}
+                            if not df_staff.empty:
+                                nm = df_staff["ชื่อ-สกุล"].astype(str).str.strip()
+                                rs = df_staff[nm == person.strip()]
+                                if not rs.empty: p_info = rs.iloc[0].to_dict()
+                            _pos = p_info.get("ตำแหน่ง","") or "—"
+                            _grp = p_info.get("กลุ่มงาน","") or "—"
+
+                            with st.expander(
+                                f"📄 {person}  |  {_pos}  |  {_grp}", expanded=False
+                            ):
+                                st.dataframe(style_leave_register(df_reg),
+                                             use_container_width=True, height=460)
+                                # ปุ่ม download รายคน
+                                buf_p = io.BytesIO()
+                                with pd.ExcelWriter(buf_p, engine="xlsxwriter") as w:
+                                    df_reg.to_excel(w, sheet_name="ทะเบียนคุมวันลา")
+                                st.download_button(
+                                    f"📥 ดาวน์โหลด Excel ({person})",
+                                    buf_p.getvalue(),
+                                    f"ทะเบียนคุม_{reg_year}_{person}.xlsx",
+                                    mime=EXCEL_MIME,
+                                    key=f"dl_reg_{person}",
+                                )
+
+                        st.markdown(LEGEND_HTML, unsafe_allow_html=True)
+                        st.markdown("---")
+
+                        # ── Export รวม: ZIP + Excel หลาย Sheet ──
+                        st.markdown("#### 📦 ดาวน์โหลดทั้งหมด")
+                        dl_c1, dl_c2 = st.columns(2)
+
+                        with dl_c1:
+                            # ZIP แยกไฟล์รายคน
+                            buf_zip = io.BytesIO()
+                            with _zipfile.ZipFile(buf_zip, "w", _zipfile.ZIP_DEFLATED) as zf:
+                                for person, df_reg in all_registers.items():
+                                    buf_z = io.BytesIO()
+                                    with pd.ExcelWriter(buf_z, engine="xlsxwriter") as w:
+                                        df_reg.to_excel(w, sheet_name="ทะเบียนคุมวันลา")
+                                    fname = f"ทะเบียนคุม_{reg_year}_{person}.xlsx"
+                                    zf.writestr(fname, buf_z.getvalue())
+                            st.download_button(
+                                f"🗜️ ZIP แยกไฟล์รายคน ({len(all_registers)} ไฟล์)",
+                                buf_zip.getvalue(),
+                                f"ทะเบียนคุมวันลา_{reg_year}_แยกรายคน.zip",
+                                mime="application/zip",
+                                use_container_width=True,
+                                key="dl_reg_zip",
+                            )
+
+                        with dl_c2:
+                            # Excel ไฟล์เดียว แยก sheet ตามชื่อ
+                            buf_all = io.BytesIO()
+                            with pd.ExcelWriter(buf_all, engine="xlsxwriter") as w:
+                                for person, df_reg in all_registers.items():
+                                    sheet = person[:28].replace("/","_").replace(":","_")
+                                    df_reg.to_excel(w, sheet_name=sheet)
+                            st.download_button(
+                                f"📊 Excel แยก Sheet ({len(all_registers)} คน)",
+                                buf_all.getvalue(),
+                                f"ทะเบียนคุมวันลา_{reg_year}_ทุกคน.xlsx",
+                                mime=EXCEL_MIME,
+                                use_container_width=True,
+                                key="dl_reg_all_sheets",
+                            )
 
     # ════════════════════════════════════════════════════════
     # Tab 3: ดาวน์โหลดรายงานการปฏิบัติงาน (หลายคน)
