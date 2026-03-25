@@ -56,7 +56,22 @@ html, body { background: #0f172a !important; }
 .main .block-container {
     background-color: #0f172a !important;
     color: #e2e8f0 !important;
-    padding-top: 1.5rem !important;
+    padding-top: 3.5rem !important;
+    max-width: 100% !important;
+}
+
+/* ซ่อน Streamlit top toolbar (deploy bar) ที่บัง header */
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"] {
+    display: none !important;
+}
+
+/* Header bar ด้านบน — ลด height ให้เหลือน้อยที่สุด */
+header[data-testid="stHeader"] {
+    background: #0f172a !important;
+    border-bottom: 1px solid #1e293b;
+    height: 2.5rem !important;
 }
 
 /* ALL text white by default */
@@ -345,7 +360,7 @@ hr { border-color: #1e293b !important; }
 ═══════════════════════════════════════════════ */
 @media (max-width: 768px) {
     div[data-testid="metric-container"] { margin-bottom: 8px; }
-    .block-container { padding: 0.75rem !important; }
+    .block-container { padding: 3rem 0.75rem 0.75rem !important; }
 }
 </style>
 """
