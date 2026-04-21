@@ -37,11 +37,6 @@ logger = logging.getLogger(__name__)
 # ===========================
 # 📱 Custom CSS
 # ===========================
-# ============================================================
-# 📱 CUSTOM_CSS v3.1 — Bloomberg-style Dark Design System
-# ให้แทนที่ block CUSTOM_CSS เดิมในไฟล์ app.py ของคุณด้วยบล็อกนี้
-# ============================================================
-
 CUSTOM_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -85,12 +80,7 @@ html, body, .stApp, .stApp > *,
   font-family: 'Sarabun', sans-serif !important;
   font-feature-settings: 'tnum' on, 'lnum' on;
 }
-.block-container { padding-top: 2.5rem !important; max-width: 100% !important; }
-
-/* mono numbers */
-.num, [class*="stMetricValue"], .stDataFrame [role="gridcell"] {
-  font-variant-numeric: tabular-nums;
-}
+.block-container { padding-top: 3.5rem !important; max-width: 100% !important; }
 
 /* Hide Streamlit chrome */
 [data-testid="stToolbar"], [data-testid="stDecoration"],
@@ -144,13 +134,9 @@ section[data-testid="stSidebar"] .stRadio > label:hover {
   color: var(--t-0) !important;
   border-left-color: var(--accent-hi);
 }
-section[data-testid="stSidebar"] .stRadio input:checked + div {
-  color: var(--accent-hi) !important;
-  font-weight: 700;
-}
 
 /* ═══════════════════════════════════════════════
-   TABS — pill style
+   TABS
 ═══════════════════════════════════════════════ */
 .stTabs [data-baseweb="tab-list"] {
   background: var(--bg-2) !important;
@@ -165,12 +151,10 @@ section[data-testid="stSidebar"] .stRadio input:checked + div {
   font-size: 13px !important;
   font-weight: 600;
   border: none !important;
-  letter-spacing: 0.01em;
 }
 .stTabs [aria-selected="true"] {
   background: var(--accent) !important;
   color: #fff !important;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
 }
 .stTabs [data-baseweb="tab-panel"] {
   background: transparent !important;
@@ -179,7 +163,7 @@ section[data-testid="stSidebar"] .stRadio input:checked + div {
 .stTabs [data-baseweb="tab-panel"] * { color: var(--t-1) !important; }
 
 /* ═══════════════════════════════════════════════
-   METRIC CARDS — Bloomberg tile
+   METRIC CARDS
 ═══════════════════════════════════════════════ */
 div[data-testid="metric-container"] {
   background: var(--bg-2) !important;
@@ -208,13 +192,11 @@ div[data-testid="stMetricValue"] * {
   font-weight: 700 !important;
   font-size: 26px !important;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
 }
 div[data-testid="stMetricDelta"],
 div[data-testid="stMetricDelta"] * {
   color: var(--ok) !important;
   font-size: 12px !important;
-  font-weight: 600;
 }
 
 /* ═══════════════════════════════════════════════
@@ -230,7 +212,6 @@ div[data-testid="stMetricDelta"] * {
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
-
 .stSelectbox [data-baseweb="select"],
 .stMultiSelect [data-baseweb="select"],
 [data-baseweb="select"] > div,
@@ -239,15 +220,7 @@ div[data-testid="stMetricDelta"] * {
   background: var(--bg-2) !important;
   border-color: var(--line-2) !important;
   border-radius: 6px !important;
-  min-height: 36px !important;
 }
-[data-baseweb="select"]:focus-within,
-[data-baseweb="input"]:focus-within,
-[data-baseweb="textarea"]:focus-within {
-  border-color: var(--accent-hi) !important;
-  box-shadow: 0 0 0 3px var(--accent-glow) !important;
-}
-
 [data-baseweb="select"] input, [data-baseweb="select"] span,
 [data-baseweb="input"] input, [data-baseweb="textarea"] textarea,
 .stTextInput input, .stTextArea textarea,
@@ -262,7 +235,6 @@ div[data-testid="stMetricDelta"] * {
 [data-baseweb="select"] div[class*="ValueContainer"] * {
   color: var(--t-0) !important;
 }
-
 [data-baseweb="popover"], [data-baseweb="menu"],
 [role="listbox"], [role="option"] {
   background: var(--bg-3) !important;
@@ -277,7 +249,6 @@ div[data-testid="stMetricDelta"] * {
   background: var(--bg-4) !important;
   color: var(--t-0) !important;
 }
-
 [data-baseweb="tag"] {
   background: rgba(37,99,235,0.15) !important;
   color: var(--accent-hi) !important;
@@ -314,10 +285,7 @@ div[data-testid="stMetricDelta"] * {
   font-family: 'Sarabun', sans-serif !important;
   font-size: 13px !important;
   font-weight: 600;
-  height: 36px;
-  padding: 0 16px !important;
   transition: all 0.15s;
-  letter-spacing: 0.01em;
 }
 .stButton > button:hover {
   background: var(--bg-4) !important;
@@ -329,11 +297,9 @@ div[data-testid="stMetricDelta"] * {
   background: var(--accent) !important;
   color: #fff !important;
   border: 1px solid var(--accent) !important;
-  box-shadow: 0 1px 0 rgba(255,255,255,0.1) inset, 0 1px 2px rgba(0,0,0,0.4);
 }
 .stButton > button[kind="primary"]:hover {
   background: var(--accent-hi) !important;
-  border-color: var(--accent-hi) !important;
   transform: translateY(-1px);
   box-shadow: 0 4px 12px var(--accent-glow);
 }
@@ -347,7 +313,6 @@ div[data-testid="stMetricDelta"] * {
 }
 .stDownloadButton > button:hover {
   background: rgba(45,212,191,0.1) !important;
-  color: var(--teal) !important;
 }
 
 /* ═══════════════════════════════════════════════
@@ -359,7 +324,6 @@ div[data-testid="stMetricDelta"] * {
   border: 1px solid var(--line-2) !important;
   border-left-width: 3px !important;
   font-size: 13px !important;
-  padding: 10px 14px !important;
 }
 .stAlert [data-testid="stMarkdownContainer"] * {
   color: var(--t-1) !important;
@@ -401,11 +365,10 @@ hr { border-color: var(--line-1) !important; }
 [data-testid="stCaptionContainer"] * {
   color: var(--t-3) !important;
   font-size: 11px !important;
-  letter-spacing: 0.02em;
 }
 
 /* ═══════════════════════════════════════════════
-   SECTION HEADER — Bloomberg crumb + title
+   SECTION HEADER
 ═══════════════════════════════════════════════ */
 .section-header {
   color: var(--t-0) !important;
@@ -445,11 +408,7 @@ hr { border-color: var(--line-1) !important; }
   border: 1px solid var(--line-2);
   overflow: hidden;
 }
-.quota-bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  transition: width 0.4s;
-}
+.quota-bar-fill { height: 100%; border-radius: 999px; transition: width 0.4s; }
 
 /* Badges */
 .badge-green, .badge-yellow, .badge-red, .badge-blue, .badge-gray {
@@ -461,9 +420,9 @@ hr { border-color: var(--line-1) !important; }
   border: 1px solid;
 }
 .badge-green  { background: rgba(16,185,129,0.12);  color: #6ee7b7; border-color: rgba(16,185,129,0.3); }
-.badge-yellow { background: rgba(245,158,11,0.12); color: #fcd34d; border-color: rgba(245,158,11,0.3); }
-.badge-red    { background: rgba(239,68,68,0.12);  color: #fca5a5; border-color: rgba(239,68,68,0.3); }
-.badge-blue   { background: rgba(59,130,246,0.12); color: #93c5fd; border-color: rgba(59,130,246,0.3); }
+.badge-yellow { background: rgba(245,158,11,0.12);  color: #fcd34d; border-color: rgba(245,158,11,0.3); }
+.badge-red    { background: rgba(239,68,68,0.12);   color: #fca5a5; border-color: rgba(239,68,68,0.3); }
+.badge-blue   { background: rgba(59,130,246,0.12);  color: #93c5fd; border-color: rgba(59,130,246,0.3); }
 .badge-gray   { background: rgba(100,116,139,0.12); color: #cbd5e1; border-color: rgba(100,116,139,0.3); }
 
 /* Legend chips */
@@ -475,7 +434,6 @@ hr { border-color: var(--line-1) !important; }
   font-weight: 700;
   margin: 2px;
   border: 1px solid rgba(255,255,255,0.08);
-  letter-spacing: 0.02em;
 }
 .leg-ok     { background: rgba(16,185,129,0.12); color: #6ee7b7; }
 .leg-hol    { background: rgba(100,116,139,0.12); color: #cbd5e1; }
@@ -498,16 +456,15 @@ hr { border-color: var(--line-1) !important; }
   font-size: 13px !important;
 }
 
-/* column gap tuning */
-[data-testid="column"] { padding: 0 6px !important; }
-
 /* responsive */
 @media (max-width: 768px) {
   div[data-testid="metric-container"] { margin-bottom: 8px; }
-  .block-container { padding: 2rem 0.75rem 0.75rem !important; }
+  .block-container { padding: 3rem 0.75rem 0.75rem !important; }
 }
 </style>
 """
+
+
 
 # ===========================
 # 🔐 App Init
