@@ -461,6 +461,38 @@ hr { border-color: var(--line-1) !important; }
   div[data-testid="metric-container"] { margin-bottom: 8px; }
   .block-container { padding: 3rem 0.75rem 0.75rem !important; }
 }
+
+/* ═══════════════ STREAMLIT OVERRIDE PATCHES ═══════════════ */
+/* ลบ tab underline เดิม + บังคับ pill style */
+.stTabs [data-baseweb="tab"] {
+  background: transparent !important;
+  border-bottom: none !important;
+  border-bottom-color: transparent !important;
+}
+.stTabs [data-baseweb="tab-highlight"] { display: none !important; }
+.stTabs [data-baseweb="tab-border"]    { display: none !important; }
+.stTabs [role="tab"]::after            { display: none !important; }
+
+/* sidebar radio dot → hide + ใช้ border-left แทน */
+section[data-testid="stSidebar"] .stRadio [data-testid="stMarkdownContainer"] p {
+  font-size: 13px !important;
+  color: var(--t-2) !important;
+}
+section[data-testid="stSidebar"] .stRadio > div > label > div:first-child {
+  display: none !important;
+}
+
+/* ซ่อน Streamlit default radio circle */
+section[data-testid="stSidebar"] [data-baseweb="radio"] > div:first-child,
+section[data-testid="stSidebar"] [data-testid="stWidgetLabel"],
+section[data-testid="stSidebar"] .stRadio > div > label > div[data-testid="stMarkdownContainer"] ~ div {
+  display: none !important;
+}
+
+/* metric delta arrow color fix */
+div[data-testid="stMetricDelta"] svg { color: inherit !important; }
+div[data-testid="stMetricDelta"][data-direction="down"] * { color: var(--bad) !important; }
+div[data-testid="stMetricDelta"][data-direction="up"]   * { color: var(--ok) !important; }
 </style>
 """
 
