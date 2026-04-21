@@ -137,9 +137,12 @@ section[data-testid="stSidebar"] .stRadio > label:hover {
   border-left-color: var(--accent-hi);
 }
 
-/* ซ่อนวงกลม radio dot — ไม่กระทบ text */
+/* dot วงกลม: ยุบความกว้างเหลือ 0 — text ยังแสดง */
 section[data-testid="stSidebar"] [data-baseweb="radio"] {
-  display: none !important;
+  width: 0 !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  flex-shrink: 0 !important;
 }
 
 
