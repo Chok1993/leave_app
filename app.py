@@ -142,18 +142,32 @@ section[data-testid="stSidebar"] [data-baseweb="radio"] {
   display: none !important;
 }
 
-/* ซ่อนปุ่ม << collapse sidebar */
+
+/* ═══════ ตรึง Sidebar — ซ่อนทุก collapse control ═══════ */
+/* ปุ่ม << / >> ทุก variant ใน Streamlit */
 [data-testid="collapsedControl"],
 [data-testid="stSidebarCollapsedControl"],
-section[data-testid="stSidebar"] button[kind="header"],
+[data-testid="stSidebarNavCollapseIcon"],
 button[data-testid="baseButton-headerNoPadding"],
-[data-testid="stSidebarNavCollapseIcon"] {
+section[data-testid="stSidebar"] button[kind="header"],
+section[data-testid="stSidebar"] [data-testid="baseButton-headerNoPadding"],
+section[data-testid="stSidebar"] > div > div > button,
+/* SVG arrow container บน sidebar */
+div[data-testid="stSidebarUserContent"] ~ div button,
+.stSidebar [data-testid*="collapse"],
+.stSidebar [data-testid*="Collapse"] {
   display: none !important;
+  pointer-events: none !important;
+  visibility: hidden !important;
 }
-/* ซ่อน << ที่เป็น SVG arrow ด้านบน sidebar */
-section[data-testid="stSidebar"] > div:first-child > div:first-child {
-  display: none !important;
+/* ป้องกัน sidebar พับตัวเมื่อหน้าจอแคบ */
+section[data-testid="stSidebar"] {
+  min-width: 200px !important;
+  max-width: 220px !important;
+  transform: none !important;
+  visibility: visible !important;
 }
+
 
 /* ═══════════════════════════════════════════════
    TABS
