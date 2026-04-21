@@ -121,9 +121,11 @@ section[data-testid="stSidebar"] .stRadio > label {
   background: transparent !important;
   border-left: 2px solid transparent;
   border-radius: 0 6px 6px 0 !important;
-  padding: 8px 12px !important;
+  padding: 8px 12px 8px 10px !important;
   margin: 1px 0 !important;
-  display: block;
+  display: flex !important;
+  align-items: center !important;
+  gap: 0 !important;
   color: var(--t-2) !important;
   font-size: 13px !important;
   font-weight: 500;
@@ -133,6 +135,24 @@ section[data-testid="stSidebar"] .stRadio > label:hover {
   background: var(--bg-2) !important;
   color: var(--t-0) !important;
   border-left-color: var(--accent-hi);
+}
+
+/* ซ่อนวงกลม radio dot — ไม่กระทบ text */
+section[data-testid="stSidebar"] [data-baseweb="radio"] {
+  display: none !important;
+}
+
+/* ซ่อนปุ่ม << collapse sidebar */
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"],
+section[data-testid="stSidebar"] button[kind="header"],
+button[data-testid="baseButton-headerNoPadding"],
+[data-testid="stSidebarNavCollapseIcon"] {
+  display: none !important;
+}
+/* ซ่อน << ที่เป็น SVG arrow ด้านบน sidebar */
+section[data-testid="stSidebar"] > div:first-child > div:first-child {
+  display: none !important;
 }
 
 /* ═══════════════════════════════════════════════
